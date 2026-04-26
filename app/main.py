@@ -1,17 +1,22 @@
-from app.bot import whatsapp_webhook
-from fastapi import FastAPI, Depends, Request
+# --- Imports ---
+from fastapi import FastAPI, Depends, Request                  # added Request
+from fastapi.responses import StreamingResponse                # added for CSV export
 from sqlalchemy.orm import Session
 from app.database import engine, Base, SessionLocal
 import app.models
 from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
+from app.bot import whatsapp_webhook                           # moved to bottom of imports
 from pydantic import BaseModel
+import csv
+import io
 
-app = FastAPI()
+# --- App init (MUST come before any @app routes) ---
+app = FastAPI()                                                # was after routes — caused crash
 
 Base.metadata.create_all(bind=engine)
 
 # --- DB Dependency ---
-def get_db():
+def get_db():                                                  # was after export route — caused crash
     db = SessionLocal()
     try:
         yield db
@@ -44,12 +49,7 @@ def remove(req: StockRequest, db: Session = Depends(get_db)):
 def products(db: Session = Depends(get_db)):
     items = get_all_products(db)
     return [
-        {
-            "id": p.id,
-            "name": p.name,
-            "quantity": p.quantity,
-            "reorder_level": p.reorder_level
-        }
+        {"id": p.id, "name": p.name, "quantity": p.quantity, "reorder_level": p.reorder_level}
         for p in items
     ]
 
@@ -59,22 +59,11 @@ def low_stock(db: Session = Depends(get_db)):
     if not items:
         return {"message": "All stock levels are healthy"}
     return [
-        {
-            "name": p.name,
-            "quantity": p.quantity,
-            "reorder_level": p.reorder_level
-        }
+        {"name": p.name, "quantity": p.quantity, "reorder_level": p.reorder_level}
         for p in items
     ]
-@app.post("/webhook")
-async def webhook(request: Request):
-    return await whatsapp_webhook(request)
 
-from fastapi.responses import StreamingResponse
-import csv
-import io
-
-@app.get("/export")
+@app.get("/export")                                            # moved to after app + get_db exist
 def export_csv(db: Session = Depends(get_db)):
     items = get_all_products(db)
     output = io.StringIO()
@@ -88,3 +77,7 @@ def export_csv(db: Session = Depends(get_db)):
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=inventory.csv"}
     )
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    return await whatsapp_webhook(request)
