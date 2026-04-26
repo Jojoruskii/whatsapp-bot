@@ -69,3 +69,22 @@ def low_stock(db: Session = Depends(get_db)):
 @app.post("/webhook")
 async def webhook(request: Request):
     return await whatsapp_webhook(request)
+
+from fastapi.responses import StreamingResponse
+import csv
+import io
+
+@app.get("/export")
+def export_csv(db: Session = Depends(get_db)):
+    items = get_all_products(db)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Name", "Quantity", "Reorder Level"])
+    for p in items:
+        writer.writerow([p.id, p.name, p.quantity, p.reorder_level])
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=inventory.csv"}
+    )
