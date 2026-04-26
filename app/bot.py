@@ -1,24 +1,30 @@
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
+from twilio.rest import Client
 from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
 from app.database import SessionLocal
+import os
 
+# --- Load credentials ---
+ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
-def get_db():
-    db = SessionLocal()
-    try:
-        return db
-    finally:
-        pass  # closed manually after use
+def send_alert(to: str, message: str):
+    """Proactively send a WhatsApp message via Twilio."""
+    client = Client(ACCOUNT_SID, AUTH_TOKEN)
+    client.messages.create(
+        from_=TWILIO_NUMBER,
+        to=f"whatsapp:{to}",
+        body=message
+    )
 
-
-def handle_message(incoming_msg: str) -> str:
+def handle_message(incoming_msg: str, sender: str) -> str:
     msg = incoming_msg.strip().lower()
     db = SessionLocal()
 
     try:
-        # --- LIST ALL STOCK ---
         if msg == "stock":
             products = get_all_products(db)
             if not products:
@@ -29,7 +35,6 @@ def handle_message(incoming_msg: str) -> str:
                 lines.append(f"{status} {p.name}: {p.quantity} units")
             return "\n".join(lines)
 
-        # --- LOW STOCK CHECK ---
         elif msg == "lowstock":
             items = get_low_stock(db)
             if not items:
@@ -39,7 +44,6 @@ def handle_message(incoming_msg: str) -> str:
                 lines.append(f"- {p.name}: {p.quantity} units (reorder level: {p.reorder_level})")
             return "\n".join(lines)
 
-        # --- ADD STOCK ---
         elif msg.startswith("add "):
             parts = msg.split()
             if len(parts) != 3 or not parts[2].isdigit():
@@ -48,7 +52,6 @@ def handle_message(incoming_msg: str) -> str:
             product = add_stock(db, name, qty)
             return f"✅ Added {qty} units of *{product.name}*.\nNew total: {product.quantity} units."
 
-        # --- REMOVE STOCK ---
         elif msg.startswith("remove "):
             parts = msg.split()
             if len(parts) != 3 or not parts[2].isdigit():
@@ -57,9 +60,20 @@ def handle_message(incoming_msg: str) -> str:
             product, error = remove_stock(db, name, qty)
             if error:
                 return f"❌ {error}"
-            return f"✅ Removed {qty} units of *{product.name}*.\nRemaining: {product.quantity} units."
 
-        # --- HELP ---
+            reply = f"✅ Removed {qty} units of *{product.name}*.\nRemaining: {product.quantity} units."
+
+            # --- Proactive low stock alert ---
+            if product.quantity <= product.reorder_level:
+                alert = (
+                    f"🚨 *Low Stock Alert!*\n"
+                    f"*{product.name}* is down to {product.quantity} units.\n"
+                    f"Reorder level is {product.reorder_level} units. Please restock soon."
+                )
+                send_alert(sender, alert)
+
+            return reply
+
         else:
             return (
                 "🤖 *Inventory Bot Commands:*\n"
@@ -76,7 +90,8 @@ def handle_message(incoming_msg: str) -> str:
 async def whatsapp_webhook(request: Request):
     form = await request.form()
     incoming_msg = form.get("Body", "")
-    reply = handle_message(incoming_msg)
+    sender = form.get("From", "").replace("whatsapp:", "")  # extract phone number
+    reply = handle_message(incoming_msg, sender)
 
     resp = MessagingResponse()
     resp.message(reply)
