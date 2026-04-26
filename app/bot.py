@@ -5,11 +5,20 @@ from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
 from app.database import SessionLocal
 
 
+def get_db():
+    db = SessionLocal()
+    try:
+        return db
+    finally:
+        pass  # closed manually after use
+
+
 def handle_message(incoming_msg: str) -> str:
     msg = incoming_msg.strip().lower()
     db = SessionLocal()
 
     try:
+        # --- LIST ALL STOCK ---
         if msg == "stock":
             products = get_all_products(db)
             if not products:
@@ -20,6 +29,7 @@ def handle_message(incoming_msg: str) -> str:
                 lines.append(f"{status} {p.name}: {p.quantity} units")
             return "\n".join(lines)
 
+        # --- LOW STOCK CHECK ---
         elif msg == "lowstock":
             items = get_low_stock(db)
             if not items:
@@ -29,6 +39,7 @@ def handle_message(incoming_msg: str) -> str:
                 lines.append(f"- {p.name}: {p.quantity} units (reorder level: {p.reorder_level})")
             return "\n".join(lines)
 
+        # --- ADD STOCK ---
         elif msg.startswith("add "):
             parts = msg.split()
             if len(parts) != 3 or not parts[2].isdigit():
@@ -37,6 +48,7 @@ def handle_message(incoming_msg: str) -> str:
             product = add_stock(db, name, qty)
             return f"✅ Added {qty} units of *{product.name}*.\nNew total: {product.quantity} units."
 
+        # --- REMOVE STOCK ---
         elif msg.startswith("remove "):
             parts = msg.split()
             if len(parts) != 3 or not parts[2].isdigit():
@@ -47,6 +59,7 @@ def handle_message(incoming_msg: str) -> str:
                 return f"❌ {error}"
             return f"✅ Removed {qty} units of *{product.name}*.\nRemaining: {product.quantity} units."
 
+        # --- HELP ---
         else:
             return (
                 "🤖 *Inventory Bot Commands:*\n"
