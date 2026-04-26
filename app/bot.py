@@ -1,26 +1,11 @@
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client
 from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
 from app.database import SessionLocal
-import os
 
-# --- Load credentials ---
-ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
-AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
-TWILIO_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
-def send_alert(to: str, message: str):
-    """Proactively send a WhatsApp message via Twilio."""
-    client = Client(ACCOUNT_SID, AUTH_TOKEN)
-    client.messages.create(
-        from_=TWILIO_NUMBER,
-        to=f"whatsapp:{to}",
-        body=message
-    )
-
-def handle_message(incoming_msg: str, sender: str) -> str:
+def handle_message(incoming_msg: str) -> str:
     msg = incoming_msg.strip().lower()
     db = SessionLocal()
 
@@ -63,14 +48,12 @@ def handle_message(incoming_msg: str, sender: str) -> str:
 
             reply = f"✅ Removed {qty} units of *{product.name}*.\nRemaining: {product.quantity} units."
 
-            # --- Proactive low stock alert ---
             if product.quantity <= product.reorder_level:
-                alert = (
-                    f"🚨 *Low Stock Alert!*\n"
+                reply += (
+                    f"\n\n🚨 *Low Stock Warning!*\n"
                     f"*{product.name}* is down to {product.quantity} units.\n"
-                    f"Reorder level is {product.reorder_level} units. Please restock soon."
+                    f"Reorder level: {product.reorder_level} units. Please restock soon!"
                 )
-                send_alert(sender, alert)
 
             return reply
 
@@ -90,8 +73,7 @@ def handle_message(incoming_msg: str, sender: str) -> str:
 async def whatsapp_webhook(request: Request):
     form = await request.form()
     incoming_msg = form.get("Body", "")
-    sender = form.get("From", "").replace("whatsapp:", "")  # extract phone number
-    reply = handle_message(incoming_msg, sender)
+    reply = handle_message(incoming_msg)
 
     resp = MessagingResponse()
     resp.message(reply)
