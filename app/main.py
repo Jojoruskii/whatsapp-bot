@@ -1,34 +1,29 @@
-# --- Imports ---
-from fastapi import FastAPI, Depends, Request                  # added Request
-from fastapi.responses import StreamingResponse                # added for CSV export
+import csv
+import io
+from fastapi import FastAPI, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from app.database import engine, Base, SessionLocal
 import app.models
 from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
-from app.bot import whatsapp_webhook                           # moved to bottom of imports
+from app.bot import whatsapp_webhook
 from pydantic import BaseModel
-import csv
-import io
 
-# --- App init (MUST come before any @app routes) ---
-app = FastAPI()                                                # was after routes — caused crash
+app = FastAPI()
 
 Base.metadata.create_all(bind=engine)
 
-# --- DB Dependency ---
-def get_db():                                                  # was after export route — caused crash
+def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-# --- Schemas ---
 class StockRequest(BaseModel):
     name: str
     qty: int
 
-# --- Routes ---
 @app.get("/")
 def read_root():
     return {"message": "Inventory bot backend is live"}
@@ -63,7 +58,7 @@ def low_stock(db: Session = Depends(get_db)):
         for p in items
     ]
 
-@app.get("/export")                                            # moved to after app + get_db exist
+@app.get("/export")
 def export_csv(db: Session = Depends(get_db)):
     items = get_all_products(db)
     output = io.StringIO()
@@ -81,6 +76,7 @@ def export_csv(db: Session = Depends(get_db)):
 @app.post("/webhook")
 async def webhook(request: Request):
     return await whatsapp_webhook(request)
+
 @app.get("/debug")
 def debug():
     from app.bot import parse_with_claude
