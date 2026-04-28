@@ -1,27 +1,59 @@
 import os
+import re
+import json
+import urllib.request
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
 from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
 from app.database import SessionLocal
-import re
-import json
-import urllib.request
+
+API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
 # --- Claude API parser ---
-API_KEY = os.getenv("ANTHROPIC_API_KEY")
+def parse_with_claude(msg: str) -> dict | None:
+    prompt = f"""You are an inventory bot parser. Extract the intent from this message.
 
-req = urllib.request.Request(
-    "https://api.anthropic.com/v1/messages",
-    data=payload,
-    headers={
-        "Content-Type": "application/json",
-        "x-api-key": API_KEY,
-        "anthropic-version": "2023-06-01"
-    },
-    method="POST"
-)
+Message: "{msg}"
+
+Reply ONLY with a JSON object in this exact format, nothing else:
+{{"action": "add" or "remove" or "stock" or "lowstock", "product": "product name or null", "qty": number or null}}
+
+Rules:
+- action is "add" if user wants to add/restock/received items
+- action is "remove" if user wants to remove/sold/used/dispatched items
+- action is "stock" if user wants to see all inventory
+- action is "lowstock" if user wants to see low stock items
+- product and qty are null for stock and lowstock actions
+- qty must be a positive integer or null
+- If you cannot determine the intent, return {{"action": null, "product": null, "qty": null}}"""
+
+    payload = json.dumps({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 100,
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+            "anthropic-version": "2023-06-01"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read())
+            text = data["content"][0]["text"].strip()
+            return json.loads(text)
+    except Exception:
+        return None
+
 
 # --- Keyword parser ---
 def parse_keyword(msg: str) -> dict | None:
@@ -33,7 +65,6 @@ def parse_keyword(msg: str) -> dict | None:
     if msg == "lowstock":
         return {"action": "lowstock", "product": None, "qty": None}
 
-    # match: add/remove <product> <number>
     match = re.match(r"^(add|remove)\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
         return {
@@ -42,7 +73,6 @@ def parse_keyword(msg: str) -> dict | None:
             "qty": int(match.group(3))
         }
 
-    # match: add/remove <number> <product>
     match = re.match(r"^(add|remove)\s+(\d+)\s+([a-zA-Z ]+)$", msg)
     if match:
         return {
@@ -111,14 +141,11 @@ def execute_command(parsed: dict) -> str:
 
 # --- Main handler ---
 def handle_message(incoming_msg: str) -> str:
-    # Step 1: try keyword parser
     parsed = parse_keyword(incoming_msg)
 
-    # Step 2: fallback to Claude
     if not parsed:
         parsed = parse_with_claude(incoming_msg)
 
-    # Step 3: execute or show help
     if parsed and parsed.get("action"):
         result = execute_command(parsed)
         if result:
