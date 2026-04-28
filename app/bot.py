@@ -12,7 +12,7 @@ API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 
 # --- Claude API parser ---
-def parse_with_claude(msg: str) -> dict | None:
+def parse_with_claude(msg: str):
     prompt = f"""You are an inventory bot parser. Extract the intent from this message.
 
 Message: "{msg}"
@@ -51,8 +51,10 @@ Rules:
             data = json.loads(response.read())
             text = data["content"][0]["text"].strip()
             return json.loads(text)
-    except Exception:
-        return None
+    except urllib.error.HTTPError as e:
+        return {"error": f"HTTP {e.code}", "body": e.read().decode()}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # --- Keyword parser ---
