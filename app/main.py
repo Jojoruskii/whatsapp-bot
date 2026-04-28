@@ -81,3 +81,8 @@ def export_csv(db: Session = Depends(get_db)):
 @app.post("/webhook")
 async def webhook(request: Request):
     return await whatsapp_webhook(request)
+@app.get("/debug")
+def debug():
+    from app.bot import parse_with_claude
+    result = parse_with_claude("we just sold 5 bags of rice")
+    return {"result": result}
