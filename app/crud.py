@@ -1,31 +1,29 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from app.models import Product
 
 def get_product(db: Session, name: str):
-    return db.query(Product).filter(Product.name == name).first()
+    return db.query(Product).filter(
+        func.lower(Product.name) == name.strip().lower()
+    ).first()
 
 def add_stock(db: Session, name: str, qty: int):
     product = get_product(db, name)
-
     if product:
         product.quantity += qty
     else:
-        product = Product(name=name, quantity=qty)
+        product = Product(name=name.strip().lower(), quantity=qty)
         db.add(product)
-
     db.commit()
     db.refresh(product)
     return product
 
 def remove_stock(db: Session, name: str, qty: int):
     product = get_product(db, name)
-
     if not product:
         return None, "Product not found"
-
     if product.quantity < qty:
         return None, f"Insufficient stock. Only {product.quantity} units available"
-
     product.quantity -= qty
     db.commit()
     db.refresh(product)
@@ -36,6 +34,7 @@ def get_all_products(db: Session):
 
 def get_low_stock(db: Session):
     return db.query(Product).filter(Product.quantity <= Product.reorder_level).all()
+
 def set_reorder_level(db: Session, name: str, level: int):
     product = get_product(db, name)
     if not product:
