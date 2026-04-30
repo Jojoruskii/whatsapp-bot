@@ -5,7 +5,7 @@ import urllib.request
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
-from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level
+from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product
 from app.database import SessionLocal
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -18,7 +18,7 @@ def parse_with_claude(msg: str):
 Message: "{msg}"
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "delete" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
 
 Rules:
 - action is "add" if user wants to add/restock/received a single item
@@ -28,6 +28,7 @@ Rules:
 - action is "lowstock" if user wants to see low stock items
 - action is "export" if user wants to download/export/get the stock sheet or spreadsheet
 - action is "setlevel" if user wants to set/change/update the reorder or warning level for a product
+- action is "delete" if user wants to delete/remove entirely/erase a product from the system
 - action is "menu" if user wants help, commands, or a list of features
 - for "multi" action, also include whether it is "add" or "remove" as a separate key called "bulk_action"
 - for "setlevel" action, put the threshold number in "level" field
@@ -77,6 +78,11 @@ def parse_keyword(msg: str) -> dict | None:
 
     if msg in ["menu", "help", "commands", "features", "hi", "hello", "start"]:
         return {"action": "menu", "product": None, "qty": None}
+
+    # delete rice
+    match = re.match(r"^delete\s+([a-zA-Z ]+)$", msg)
+    if match:
+        return {"action": "delete", "product": match.group(1).strip(), "qty": None}
 
     match = re.match(r"^setlevel\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
@@ -136,6 +142,8 @@ def get_menu() -> str:
         "➖ *Removing Stock*\n"
         "• `remove rice 3` — remove single item\n"
         "• `remove rice 3, maize 5` — remove multiple\n\n"
+        "🗑️ *Delete Product*\n"
+        "• `delete rice` — remove product entirely\n\n"
         "⚙️ *Settings*\n"
         "• `setlevel rice 15` — set reorder warning level\n\n"
         "📊 *Export*\n"
@@ -189,6 +197,14 @@ def execute_command(parsed: dict) -> str:
                 f"{BASE_URL}/export\n\n"
                 "_Opens directly in Excel or Google Sheets_ ✅"
             )
+
+        elif action == "delete":
+            if not product:
+                return "❌ Format: delete <product>\nExample: delete rice"
+            success, error = delete_product(db, product)
+            if error:
+                return f"❌ {error}"
+            return f"🗑️ *{product.title()}* has been deleted from inventory."
 
         elif action == "setlevel":
             level = parsed.get("level")

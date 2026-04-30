@@ -29,6 +29,14 @@ def remove_stock(db: Session, name: str, qty: int):
     db.refresh(product)
     return product, None
 
+def delete_product(db: Session, name: str):
+    product = get_product(db, name)
+    if not product:
+        return False, "Product not found"
+    db.delete(product)
+    db.commit()
+    return True, None
+
 def get_all_products(db: Session):
     return db.query(Product).all()
 
