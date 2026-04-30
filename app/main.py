@@ -1,5 +1,6 @@
 import csv
 import io
+import os
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -10,7 +11,6 @@ from app.bot import whatsapp_webhook
 from pydantic import BaseModel
 
 app = FastAPI()
-
 Base.metadata.create_all(bind=engine)
 
 def get_db():
@@ -77,14 +77,7 @@ def export_csv(db: Session = Depends(get_db)):
 async def webhook(request: Request):
     return await whatsapp_webhook(request)
 
-@app.get("/debug")
-def debug():
-    from app.bot import parse_with_claude
-    result = parse_with_claude("we just sold 5 bags of rice")
-    return {"result": result}
-
 @app.get("/debug-env")
 def debug_env():
-    import os
     url = os.getenv("DATABASE_URL", "NOT SET")
-    return {"DATABASE_URL": url[:30] if url != "NOT SET" else "NOT SET"}
+    return {"DATABASE_URL": url[:40] if url != "NOT SET" else "NOT SET"}
