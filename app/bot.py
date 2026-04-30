@@ -12,7 +12,6 @@ API_KEY = os.getenv("ANTHROPIC_API_KEY")
 BASE_URL = "https://web-production-e8e96.up.railway.app"
 
 
-# --- Claude API parser ---
 def parse_with_claude(msg: str):
     prompt = f"""You are an inventory bot parser. Extract the intent from this message.
 
@@ -61,7 +60,6 @@ Rules:
         return {"error": str(e)}
 
 
-# --- Keyword parser ---
 def parse_keyword(msg: str) -> dict | None:
     msg = msg.strip().lower()
 
@@ -74,7 +72,6 @@ def parse_keyword(msg: str) -> dict | None:
     if msg in ["export", "download", "send stock", "stock sheet", "spreadsheet"]:
         return {"action": "export", "product": None, "qty": None}
 
-    # multi-product: add rice 10, maize 20, sugar 5
     multi_match = re.match(r"^(add|remove)\s+(.+)", msg)
     if multi_match and "," in msg:
         action = multi_match.group(1)
@@ -82,7 +79,6 @@ def parse_keyword(msg: str) -> dict | None:
         items = []
         for item in items_raw:
             item = item.strip()
-            # match "product qty" or "qty product"
             m = re.match(r"^([a-zA-Z ]+?)\s+(\d+)$", item) or re.match(r"^(\d+)\s+([a-zA-Z ]+)$", item)
             if m:
                 g = m.groups()
@@ -93,7 +89,6 @@ def parse_keyword(msg: str) -> dict | None:
         if items:
             return {"action": "multi", "bulk_action": action, "items": items, "product": None, "qty": None}
 
-    # single: add/remove <product> <number>
     match = re.match(r"^(add|remove)\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
         return {
@@ -102,7 +97,6 @@ def parse_keyword(msg: str) -> dict | None:
             "qty": int(match.group(3))
         }
 
-    # single: add/remove <number> <product>
     match = re.match(r"^(add|remove)\s+(\d+)\s+([a-zA-Z ]+)$", msg)
     if match:
         return {
@@ -114,7 +108,6 @@ def parse_keyword(msg: str) -> dict | None:
     return None
 
 
-# --- Execute parsed command ---
 def execute_command(parsed: dict) -> str:
     action = parsed.get("action")
     product = parsed.get("product")
@@ -127,9 +120,16 @@ def execute_command(parsed: dict) -> str:
             if not products:
                 return "📦 No products in inventory yet."
             lines = ["📦 *Current Inventory:*"]
+            low = []
             for p in products:
                 status = "⚠️" if p.quantity <= p.reorder_level else "✅"
                 lines.append(f"{status} {p.name}: {p.quantity} units")
+                if p.quantity <= p.reorder_level:
+                    low.append(p)
+            if low:
+                lines.append("\n🚨 *Low Stock Alert:*")
+                for p in low:
+                    lines.append(f"• *{p.name}* needs restocking — only {p.quantity} units left!")
             return "\n".join(lines)
 
         elif action == "lowstock":
@@ -208,7 +208,6 @@ def execute_command(parsed: dict) -> str:
         db.close()
 
 
-# --- Main handler ---
 def handle_message(incoming_msg: str) -> str:
     parsed = parse_keyword(incoming_msg)
 
