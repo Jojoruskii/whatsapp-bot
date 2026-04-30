@@ -36,3 +36,11 @@ def get_all_products(db: Session):
 
 def get_low_stock(db: Session):
     return db.query(Product).filter(Product.quantity <= Product.reorder_level).all()
+def set_reorder_level(db: Session, name: str, level: int):
+    product = get_product(db, name)
+    if not product:
+        return None, "Product not found"
+    product.reorder_level = level
+    db.commit()
+    db.refresh(product)
+    return product, None

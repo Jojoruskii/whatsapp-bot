@@ -5,7 +5,7 @@ import urllib.request
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
-from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
+from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level
 from app.database import SessionLocal
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -18,7 +18,7 @@ def parse_with_claude(msg: str):
 Message: "{msg}"
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi", "product": "product name or null", "qty": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
 
 Rules:
 - action is "add" if user wants to add/restock/received a single item
@@ -27,7 +27,9 @@ Rules:
 - action is "stock" if user wants to see all inventory
 - action is "lowstock" if user wants to see low stock items
 - action is "export" if user wants to download/export/get the stock sheet or spreadsheet
+- action is "setlevel" if user wants to set/change/update the reorder or warning level for a product
 - for "multi" action, also include whether it is "add" or "remove" as a separate key called "bulk_action"
+- for "setlevel" action, put the threshold number in "level" field
 - product and qty are null for multi, stock, lowstock and export actions
 - qty must be a positive integer or null
 - If you cannot determine the intent, return {{"action": null, "product": null, "qty": null, "items": null}}"""
@@ -71,6 +73,16 @@ def parse_keyword(msg: str) -> dict | None:
 
     if msg in ["export", "download", "send stock", "stock sheet", "spreadsheet"]:
         return {"action": "export", "product": None, "qty": None}
+
+    # setlevel rice 15
+    match = re.match(r"^setlevel\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
+    if match:
+        return {
+            "action": "setlevel",
+            "product": match.group(1).strip(),
+            "level": int(match.group(2)),
+            "qty": None
+        }
 
     multi_match = re.match(r"^(add|remove)\s+(.+)", msg)
     if multi_match and "," in msg:
@@ -149,6 +161,18 @@ def execute_command(parsed: dict) -> str:
                 "_Opens directly in Excel or Google Sheets_ ✅"
             )
 
+        elif action == "setlevel":
+            level = parsed.get("level")
+            if not product or level is None:
+                return "❌ Format: setlevel <product> <level>\nExample: setlevel rice 15"
+            p, error = set_reorder_level(db, product, level)
+            if error:
+                return f"❌ {error}"
+            return (
+                f"✅ Reorder level for *{p.name}* updated to *{p.reorder_level} units*.\n"
+                f"You'll be warned when stock drops to or below this level."
+            )
+
         elif action == "multi":
             bulk_action = parsed.get("bulk_action", "add")
             items = parsed.get("items", [])
@@ -225,7 +249,8 @@ def handle_message(incoming_msg: str) -> str:
         "• `lowstock` — check low stock items\n"
         "• `add <product> <qty>` — add stock\n"
         "• `remove <product> <qty>` — remove stock\n"
-        "• `add rice 10, maize 20, sugar 5` — add multiple\n"
+        "• `add rice 10, maize 20` — add multiple\n"
+        "• `setlevel rice 15` — set reorder level\n"
         "• `export` — download stock sheet\n\n"
         "Or just type naturally — e.g. _'we sold 5 bags of rice'_"
     )
