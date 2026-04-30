@@ -9,6 +9,7 @@ from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
 from app.database import SessionLocal
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
+BASE_URL = "https://web-production-e8e96.up.railway.app"
 
 
 # --- Claude API parser ---
@@ -18,14 +19,15 @@ def parse_with_claude(msg: str):
 Message: "{msg}"
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock", "product": "product name or null", "qty": number or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export", "product": "product name or null", "qty": number or null}}
 
 Rules:
 - action is "add" if user wants to add/restock/received items
 - action is "remove" if user wants to remove/sold/used/dispatched items
 - action is "stock" if user wants to see all inventory
 - action is "lowstock" if user wants to see low stock items
-- product and qty are null for stock and lowstock actions
+- action is "export" if user wants to download/export/get the stock sheet or spreadsheet
+- product and qty are null for stock, lowstock and export actions
 - qty must be a positive integer or null
 - If you cannot determine the intent, return {{"action": null, "product": null, "qty": null}}"""
 
@@ -66,6 +68,9 @@ def parse_keyword(msg: str) -> dict | None:
 
     if msg == "lowstock":
         return {"action": "lowstock", "product": None, "qty": None}
+
+    if msg in ["export", "download", "send stock", "stock sheet", "spreadsheet"]:
+        return {"action": "export", "product": None, "qty": None}
 
     match = re.match(r"^(add|remove)\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
@@ -113,6 +118,14 @@ def execute_command(parsed: dict) -> str:
                 lines.append(f"- {p.name}: {p.quantity} units (reorder level: {p.reorder_level})")
             return "\n".join(lines)
 
+        elif action == "export":
+            return (
+                "📊 *Download Stock Sheet*\n"
+                "Click the link below to download your inventory as a CSV file:\n\n"
+                f"{BASE_URL}/export\n\n"
+                "_Opens directly in Excel or Google Sheets_ ✅"
+            )
+
         elif action == "add":
             if not product or not qty:
                 return "❌ I couldn't figure out what to add. Try: add rice 10"
@@ -158,7 +171,8 @@ def handle_message(incoming_msg: str) -> str:
         "• `stock` — view all products\n"
         "• `lowstock` — check low stock items\n"
         "• `add <product> <qty>` — add stock\n"
-        "• `remove <product> <qty>` — remove stock\n\n"
+        "• `remove <product> <qty>` — remove stock\n"
+        "• `export` — download stock sheet\n\n"
         "Or just type naturally — e.g. _'we sold 5 bags of rice'_"
     )
 
