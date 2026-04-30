@@ -19,21 +19,23 @@ def parse_with_claude(msg: str):
 Message: "{msg}"
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock" or "export", "product": "product name or null", "qty": number or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi", "product": "product name or null", "qty": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
 
 Rules:
-- action is "add" if user wants to add/restock/received items
-- action is "remove" if user wants to remove/sold/used/dispatched items
+- action is "add" if user wants to add/restock/received a single item
+- action is "remove" if user wants to remove/sold/used/dispatched a single item
+- action is "multi" if user mentions multiple products in one message - put them all in "items" array
 - action is "stock" if user wants to see all inventory
 - action is "lowstock" if user wants to see low stock items
 - action is "export" if user wants to download/export/get the stock sheet or spreadsheet
-- product and qty are null for stock, lowstock and export actions
+- for "multi" action, also include whether it is "add" or "remove" as a separate key called "bulk_action"
+- product and qty are null for multi, stock, lowstock and export actions
 - qty must be a positive integer or null
-- If you cannot determine the intent, return {{"action": null, "product": null, "qty": null}}"""
+- If you cannot determine the intent, return {{"action": null, "product": null, "qty": null, "items": null}}"""
 
     payload = json.dumps({
         "model": "claude-sonnet-4-20250514",
-        "max_tokens": 100,
+        "max_tokens": 200,
         "messages": [{"role": "user", "content": prompt}]
     }).encode()
 
@@ -72,6 +74,26 @@ def parse_keyword(msg: str) -> dict | None:
     if msg in ["export", "download", "send stock", "stock sheet", "spreadsheet"]:
         return {"action": "export", "product": None, "qty": None}
 
+    # multi-product: add rice 10, maize 20, sugar 5
+    multi_match = re.match(r"^(add|remove)\s+(.+)", msg)
+    if multi_match and "," in msg:
+        action = multi_match.group(1)
+        items_raw = multi_match.group(2).split(",")
+        items = []
+        for item in items_raw:
+            item = item.strip()
+            # match "product qty" or "qty product"
+            m = re.match(r"^([a-zA-Z ]+?)\s+(\d+)$", item) or re.match(r"^(\d+)\s+([a-zA-Z ]+)$", item)
+            if m:
+                g = m.groups()
+                if g[0].isdigit():
+                    items.append({"product": g[1].strip(), "qty": int(g[0])})
+                else:
+                    items.append({"product": g[0].strip(), "qty": int(g[1])})
+        if items:
+            return {"action": "multi", "bulk_action": action, "items": items, "product": None, "qty": None}
+
+    # single: add/remove <product> <number>
     match = re.match(r"^(add|remove)\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
         return {
@@ -80,6 +102,7 @@ def parse_keyword(msg: str) -> dict | None:
             "qty": int(match.group(3))
         }
 
+    # single: add/remove <number> <product>
     match = re.match(r"^(add|remove)\s+(\d+)\s+([a-zA-Z ]+)$", msg)
     if match:
         return {
@@ -125,6 +148,37 @@ def execute_command(parsed: dict) -> str:
                 f"{BASE_URL}/export\n\n"
                 "_Opens directly in Excel or Google Sheets_ ✅"
             )
+
+        elif action == "multi":
+            bulk_action = parsed.get("bulk_action", "add")
+            items = parsed.get("items", [])
+            if not items:
+                return "❌ Couldn't parse the products. Try: add rice 10, maize 20, sugar 5"
+
+            lines = [f"{'✅ Added' if bulk_action == 'add' else '✅ Removed'} multiple items:\n"]
+            warnings = []
+
+            for item in items:
+                name = item.get("product")
+                q = item.get("qty")
+                if not name or not q:
+                    continue
+                if bulk_action == "add":
+                    p = add_stock(db, name, q)
+                    lines.append(f"• *{p.name}*: {q} units added → {p.quantity} total")
+                else:
+                    p, error = remove_stock(db, name, q)
+                    if error:
+                        lines.append(f"• *{name}*: ❌ {error}")
+                        continue
+                    lines.append(f"• *{p.name}*: {q} units removed → {p.quantity} remaining")
+                    if p.quantity <= p.reorder_level:
+                        warnings.append(f"🚨 *{p.name}* is low: {p.quantity} units left!")
+
+            if warnings:
+                lines.append("\n" + "\n".join(warnings))
+
+            return "\n".join(lines)
 
         elif action == "add":
             if not product or not qty:
@@ -172,6 +226,7 @@ def handle_message(incoming_msg: str) -> str:
         "• `lowstock` — check low stock items\n"
         "• `add <product> <qty>` — add stock\n"
         "• `remove <product> <qty>` — remove stock\n"
+        "• `add rice 10, maize 20, sugar 5` — add multiple\n"
         "• `export` — download stock sheet\n\n"
         "Or just type naturally — e.g. _'we sold 5 bags of rice'_"
     )
