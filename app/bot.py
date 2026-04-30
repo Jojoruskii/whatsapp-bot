@@ -18,7 +18,7 @@ def parse_with_claude(msg: str):
 Message: "{msg}"
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
 
 Rules:
 - action is "add" if user wants to add/restock/received a single item
@@ -28,9 +28,10 @@ Rules:
 - action is "lowstock" if user wants to see low stock items
 - action is "export" if user wants to download/export/get the stock sheet or spreadsheet
 - action is "setlevel" if user wants to set/change/update the reorder or warning level for a product
+- action is "menu" if user wants help, commands, or a list of features
 - for "multi" action, also include whether it is "add" or "remove" as a separate key called "bulk_action"
 - for "setlevel" action, put the threshold number in "level" field
-- product and qty are null for multi, stock, lowstock and export actions
+- product and qty are null for multi, stock, lowstock, export and menu actions
 - qty must be a positive integer or null
 - If you cannot determine the intent, return {{"action": null, "product": null, "qty": null, "items": null}}"""
 
@@ -65,7 +66,7 @@ Rules:
 def parse_keyword(msg: str) -> dict | None:
     msg = msg.strip().lower()
 
-    if msg == "stock":
+    if msg in ["stock", "inventory", "show stock"]:
         return {"action": "stock", "product": None, "qty": None}
 
     if msg == "lowstock":
@@ -74,7 +75,9 @@ def parse_keyword(msg: str) -> dict | None:
     if msg in ["export", "download", "send stock", "stock sheet", "spreadsheet"]:
         return {"action": "export", "product": None, "qty": None}
 
-    # setlevel rice 15
+    if msg in ["menu", "help", "commands", "features", "hi", "hello", "start"]:
+        return {"action": "menu", "product": None, "qty": None}
+
     match = re.match(r"^setlevel\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
         return {
@@ -120,6 +123,29 @@ def parse_keyword(msg: str) -> dict | None:
     return None
 
 
+def get_menu() -> str:
+    return (
+        "👋 *Welcome to Inventory Bot!*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📦 *Stock Management*\n"
+        "• `stock` — view full inventory\n"
+        "• `lowstock` — view low stock items\n\n"
+        "➕ *Adding Stock*\n"
+        "• `add rice 10` — add single item\n"
+        "• `add rice 10, maize 20, sugar 5` — add multiple\n\n"
+        "➖ *Removing Stock*\n"
+        "• `remove rice 3` — remove single item\n"
+        "• `remove rice 3, maize 5` — remove multiple\n\n"
+        "⚙️ *Settings*\n"
+        "• `setlevel rice 15` — set reorder warning level\n\n"
+        "📊 *Export*\n"
+        "• `export` — download stock as CSV\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💡 _You can also type naturally_\n"
+        "e.g. 'we just sold 5 bags of rice'"
+    )
+
+
 def execute_command(parsed: dict) -> str:
     action = parsed.get("action")
     product = parsed.get("product")
@@ -127,10 +153,13 @@ def execute_command(parsed: dict) -> str:
     db = SessionLocal()
 
     try:
-        if action == "stock":
+        if action == "menu":
+            return get_menu()
+
+        elif action == "stock":
             products = get_all_products(db)
             if not products:
-                return "📦 No products in inventory yet."
+                return "📦 No products in inventory yet. Type *menu* to see available commands."
             lines = ["📦 *Current Inventory:*"]
             low = []
             for p in products:
@@ -243,17 +272,7 @@ def handle_message(incoming_msg: str) -> str:
         if result:
             return result
 
-    return (
-        "🤖 *Inventory Bot Commands:*\n"
-        "• `stock` — view all products\n"
-        "• `lowstock` — check low stock items\n"
-        "• `add <product> <qty>` — add stock\n"
-        "• `remove <product> <qty>` — remove stock\n"
-        "• `add rice 10, maize 20` — add multiple\n"
-        "• `setlevel rice 15` — set reorder level\n"
-        "• `export` — download stock sheet\n\n"
-        "Or just type naturally — e.g. _'we sold 5 bags of rice'_"
-    )
+    return get_menu()
 
 
 async def whatsapp_webhook(request: Request):
