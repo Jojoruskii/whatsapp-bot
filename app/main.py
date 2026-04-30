@@ -82,3 +82,9 @@ def debug():
     from app.bot import parse_with_claude
     result = parse_with_claude("we just sold 5 bags of rice")
     return {"result": result}
+
+@app.get("/debug-env")
+def debug_env():
+    import os
+    url = os.getenv("DATABASE_URL", "NOT SET")
+    return {"DATABASE_URL": url[:30] if url != "NOT SET" else "NOT SET"}
