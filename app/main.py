@@ -86,3 +86,16 @@ def migrate(db: Session = Depends(get_db)):
         return {"message": "Migration successful - category column added"}
     except Exception as e:
         return {"message": f"Already migrated or error: {str(e)}"}
+
+@app.get("/autocategorize")
+async def autocategorize(db: Session = Depends(get_db)):
+    from app.bot import guess_category
+    from app.crud import get_all_products
+    products = get_all_products(db)
+    updated = []
+    for p in products:
+        if not p.category or p.category == "Uncategorized":
+            p.category = guess_category(p.name)
+            updated.append({"name": p.name, "category": p.category})
+    db.commit()
+    return {"updated": updated}
