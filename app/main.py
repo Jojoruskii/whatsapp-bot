@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from app.database import engine, Base, SessionLocal
 import app.models
 from app.crud import add_stock, remove_stock, get_all_products, get_low_stock
@@ -44,7 +45,7 @@ def remove(req: StockRequest, db: Session = Depends(get_db)):
 def products(db: Session = Depends(get_db)):
     items = get_all_products(db)
     return [
-        {"id": p.id, "name": p.name, "quantity": p.quantity, "reorder_level": p.reorder_level}
+        {"id": p.id, "name": p.name, "quantity": p.quantity, "reorder_level": p.reorder_level, "category": p.category}
         for p in items
     ]
 
@@ -54,7 +55,7 @@ def low_stock(db: Session = Depends(get_db)):
     if not items:
         return {"message": "All stock levels are healthy"}
     return [
-        {"name": p.name, "quantity": p.quantity, "reorder_level": p.reorder_level}
+        {"name": p.name, "quantity": p.quantity, "reorder_level": p.reorder_level, "category": p.category}
         for p in items
     ]
 
@@ -63,9 +64,9 @@ def export_csv(db: Session = Depends(get_db)):
     items = get_all_products(db)
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["ID", "Name", "Quantity", "Reorder Level"])
+    writer.writerow(["ID", "Name", "Category", "Quantity", "Reorder Level"])
     for p in items:
-        writer.writerow([p.id, p.name, p.quantity, p.reorder_level])
+        writer.writerow([p.id, p.name, p.category or "Uncategorized", p.quantity, p.reorder_level])
     output.seek(0)
     return StreamingResponse(
         output,
@@ -77,7 +78,11 @@ def export_csv(db: Session = Depends(get_db)):
 async def webhook(request: Request):
     return await whatsapp_webhook(request)
 
-@app.get("/debug-env")
-def debug_env():
-    url = os.getenv("DATABASE_URL", "NOT SET")
-    return {"DATABASE_URL": url[:40] if url != "NOT SET" else "NOT SET"}
+@app.get("/migrate")
+def migrate(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("ALTER TABLE products ADD COLUMN category VARCHAR"))
+        db.commit()
+        return {"message": "Migration successful - category column added"}
+    except Exception as e:
+        return {"message": f"Already migrated or error: {str(e)}"}

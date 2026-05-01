@@ -5,11 +5,30 @@ import urllib.request
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
-from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product, reset_inventory, clear_stock
+from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product, reset_inventory, clear_stock, set_category
 from app.database import SessionLocal
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
 BASE_URL = "https://web-production-e8e96.up.railway.app"
+
+CATEGORY_EMOJIS = {
+    "grains": "🌾",
+    "dairy": "🥛",
+    "cleaning": "🧴",
+    "beverages": "🥤",
+    "snacks": "🍿",
+    "produce": "🥬",
+    "meat": "🥩",
+    "bakery": "🍞",
+    "frozen": "🧊",
+    "household": "🏠",
+    "personal care": "🪥",
+    "condiments": "🧂",
+    "uncategorized": "📦",
+}
+
+def get_category_emoji(category: str) -> str:
+    return CATEGORY_EMOJIS.get(category.lower(), "📦")
 
 
 def build_progress_bar(current: int, reorder_level: int) -> tuple:
@@ -26,13 +45,46 @@ def build_progress_bar(current: int, reorder_level: int) -> tuple:
     return indicator, bar, pct, status
 
 
+def guess_category(product_name: str) -> str:
+    prompt = f"""What category does this product belong to?
+Product: "{product_name}"
+
+Choose ONE from: Grains, Dairy, Cleaning, Beverages, Snacks, Produce, Meat, Bakery, Frozen, Household, Personal Care, Condiments, Uncategorized
+
+Reply with ONLY the category name, nothing else."""
+
+    payload = json.dumps({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+            "anthropic-version": "2023-06-01"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read())
+            return data["content"][0]["text"].strip().title()
+    except Exception:
+        return "Uncategorized"
+
+
 def parse_with_claude(msg: str):
     prompt = f"""You are an inventory bot parser. Extract the intent from this message.
 
 Message: "{msg}"
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "delete" or "reset" or "clearstock" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "delete" or "reset" or "clearstock" or "setcategory" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "category": "category name or null", "items": [{{"product": "name", "qty": number}}] or null}}
 
 Rules:
 - action is "add" if user wants to add/restock/received a single item
@@ -42,12 +94,14 @@ Rules:
 - action is "lowstock" if user wants to see low stock items
 - action is "export" if user wants to download/export the stock sheet
 - action is "setlevel" if user wants to set the reorder level for a product
-- action is "delete" if user wants to delete a single product entirely
-- action is "reset" if user wants to delete ALL products and wipe the entire inventory
-- action is "clearstock" if user wants to zero out all quantities but keep the product list
+- action is "delete" if user wants to delete a single product
+- action is "reset" if user wants to wipe the entire inventory
+- action is "clearstock" if user wants to zero all quantities
+- action is "setcategory" if user wants to change or set the category of a product
 - action is "menu" if user wants help or a list of features
 - for "multi" action, include "bulk_action" as "add" or "remove"
-- for "setlevel" action, put the threshold number in "level" field
+- for "setlevel" action, put the threshold in "level"
+- for "setcategory" action, put the category name in "category"
 - If you cannot determine the intent, return {{"action": null, "product": null, "qty": null, "items": null}}"""
 
     payload = json.dumps({
@@ -100,12 +154,11 @@ def parse_keyword(msg: str) -> dict | None:
 
     match = re.match(r"^setlevel\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
-        return {
-            "action": "setlevel",
-            "product": match.group(1).strip(),
-            "level": int(match.group(2)),
-            "qty": None
-        }
+        return {"action": "setlevel", "product": match.group(1).strip(), "level": int(match.group(2)), "qty": None}
+
+    match = re.match(r"^setcategory\s+([a-zA-Z ]+?)\s+(grains|dairy|cleaning|beverages|snacks|produce|meat|bakery|frozen|household|personal care|condiments|uncategorized)$", msg)
+    if match:
+        return {"action": "setcategory", "product": match.group(1).strip(), "category": match.group(2).strip().title(), "qty": None}
 
     multi_match = re.match(r"^(add|remove)\s+(.+)", msg)
     if multi_match and "," in msg:
@@ -142,15 +195,12 @@ def get_menu() -> str:
         "📦 *Stock Management*\n"
         "• `stock` — view full inventory\n"
         "• `lowstock` — view low stock items\n\n"
-        "➕ *Adding Stock*\n"
-        "• `add rice 10` — add single item\n"
-        "• `add rice 10, maize 20` — add multiple\n\n"
-        "➖ *Removing Stock*\n"
-        "• `remove rice 3` — remove single item\n"
-        "• `remove rice 3, maize 5` — remove multiple\n\n"
-        "🗑️ *Delete:* `delete rice`\n"
-        "⚙️ *Set level:* `setlevel rice 15`\n"
-        "📊 *Export:* `export`\n\n"
+        "➕ `add rice 10`\n"
+        "➖ `remove rice 3`\n"
+        "🗑️ `delete rice`\n"
+        "⚙️ `setlevel rice 15`\n"
+        "🏷️ `setcategory rice grains`\n"
+        "📊 `export`\n\n"
         "🔴 *Danger Zone*\n"
         "• `clearstock` — zero all quantities\n"
         "• `reset` — wipe entire inventory\n\n"
@@ -173,17 +223,29 @@ def execute_command(parsed: dict) -> str:
             products = get_all_products(db)
             if not products:
                 return "📦 No products yet.\nType *menu* to see commands."
+
             lines = ["📦 *INVENTORY DASHBOARD*", "━━━━━━━━━━━━━━━━━━━━━━━"]
             critical, warning = [], []
+
+            # group by category
+            categories = {}
             for p in products:
-                indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
-                lines.append(f"{indicator} *{p.name.title()}* {status}")
-                lines.append(f"   {p.quantity} units  {bar} {pct}%")
-                if indicator == "🔴":
-                    critical.append(p.name.title())
-                elif indicator == "🟡":
-                    warning.append(p.name.title())
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+                cat = p.category or "Uncategorized"
+                categories.setdefault(cat, []).append(p)
+
+            for cat, items in sorted(categories.items()):
+                emoji = get_category_emoji(cat)
+                lines.append(f"\n{emoji} *{cat.upper()}*")
+                for p in items:
+                    indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
+                    lines.append(f"{indicator} *{p.name.title()}* {status}")
+                    lines.append(f"   {p.quantity} units  {bar} {pct}%")
+                    if indicator == "🔴":
+                        critical.append(p.name.title())
+                    elif indicator == "🟡":
+                        warning.append(p.name.title())
+
+            lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━")
             lines.append(f"Total: {len(products)}  🔴 {len(critical)}  🟡 {len(warning)}")
             if critical:
                 lines.append(f"💡 Restock: {', '.join(critical)}")
@@ -200,7 +262,9 @@ def execute_command(parsed: dict) -> str:
             lines = ["⚠️ *Low Stock Alert:*\n"]
             for p in items:
                 indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
-                lines.append(f"🔴 *{p.name.title()}*")
+                cat = p.category or "Uncategorized"
+                emoji = get_category_emoji(cat)
+                lines.append(f"🔴 *{p.name.title()}* {emoji}")
                 lines.append(f"   {p.quantity} units  {bar} {pct}%")
                 lines.append(f"   Reorder at: {p.reorder_level} units\n")
             return "\n".join(lines)
@@ -214,7 +278,7 @@ def execute_command(parsed: dict) -> str:
 
         elif action == "delete":
             if not product:
-                return "❌ Format: delete <product>\nExample: delete rice"
+                return "❌ Format: delete <product>"
             success, error = delete_product(db, product)
             if error:
                 return f"❌ {error}"
@@ -222,28 +286,42 @@ def execute_command(parsed: dict) -> str:
 
         elif action == "reset":
             count = reset_inventory(db)
-            return (
-                f"🗑️ *Inventory Reset Complete*\n"
-                f"All {count} products have been permanently deleted.\n"
-                f"Your inventory is now empty."
-            )
+            return f"🗑️ *Inventory Reset*\nAll {count} products permanently deleted."
 
         elif action == "clearstock":
             count = clear_stock(db)
-            return (
-                f"🔄 *Stock Cleared*\n"
-                f"All {count} products have been zeroed out.\n"
-                f"Product list is kept but all quantities are now 0."
-            )
+            return f"🔄 *Stock Cleared*\nAll {count} products zeroed out."
 
         elif action == "setlevel":
             level = parsed.get("level")
             if not product or level is None:
-                return "❌ Format: setlevel <product> <level>\nExample: setlevel rice 15"
+                return "❌ Format: setlevel <product> <level>"
             p, error = set_reorder_level(db, product, level)
             if error:
                 return f"❌ {error}"
             return f"✅ *{p.name.title()}* reorder level set to *{p.reorder_level} units*."
+
+        elif action == "setcategory":
+            category = parsed.get("category")
+            if not product or not category:
+                return "❌ Format: setcategory <product> <category>\nExample: setcategory rice grains"
+            p, error = set_category(db, product, category)
+            if error:
+                return f"❌ {error}"
+            emoji = get_category_emoji(p.category.lower())
+            return f"✅ *{p.name.title()}* moved to {emoji} *{p.category}*."
+
+        elif action == "add":
+            if not product or not qty:
+                return "❌ Try: add rice 10"
+            category = guess_category(product)
+            p = add_stock(db, product, qty, category)
+            emoji = get_category_emoji(category.lower())
+            return (
+                f"✅ Added {qty} units of *{p.name.title()}*.\n"
+                f"New total: {p.quantity} units.\n"
+                f"Category: {emoji} {p.category}"
+            )
 
         elif action == "multi":
             bulk_action = parsed.get("bulk_action", "add")
@@ -258,8 +336,10 @@ def execute_command(parsed: dict) -> str:
                 if not name or not q:
                     continue
                 if bulk_action == "add":
-                    p = add_stock(db, name, q)
-                    lines.append(f"• *{p.name.title()}*: +{q} → {p.quantity} total")
+                    category = guess_category(name)
+                    p = add_stock(db, name, q, category)
+                    emoji = get_category_emoji(category.lower())
+                    lines.append(f"• *{p.name.title()}*: +{q} → {p.quantity} total {emoji}")
                 else:
                     p, error = remove_stock(db, name, q)
                     if error:
@@ -271,12 +351,6 @@ def execute_command(parsed: dict) -> str:
             if warnings:
                 lines.append("\n" + "\n".join(warnings))
             return "\n".join(lines)
-
-        elif action == "add":
-            if not product or not qty:
-                return "❌ Try: add rice 10"
-            p = add_stock(db, product, qty)
-            return f"✅ Added {qty} units of *{p.name.title()}*.\nNew total: {p.quantity} units."
 
         elif action == "remove":
             if not product or not qty:

@@ -8,3 +8,4 @@ class Product(Base):
     name = Column(String, unique=True, index=True)
     quantity = Column(Integer, default=0)
     reorder_level = Column(Integer, default=5)
+    category = Column(String, nullable=True, default="Uncategorized")
