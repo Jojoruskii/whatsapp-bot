@@ -38,14 +38,12 @@ def delete_product(db: Session, name: str):
     return True, None
 
 def reset_inventory(db: Session):
-    """Delete all products entirely"""
     count = db.query(Product).count()
     db.query(Product).delete()
     db.commit()
     return count
 
 def clear_stock(db: Session):
-    """Zero out all quantities but keep products"""
     products = db.query(Product).all()
     for p in products:
         p.quantity = 0
@@ -53,10 +51,12 @@ def clear_stock(db: Session):
     return len(products)
 
 def get_all_products(db: Session):
-    return db.query(Product).all()
+    return db.query(Product).order_by(func.lower(Product.name)).all()
 
 def get_low_stock(db: Session):
-    return db.query(Product).filter(Product.quantity <= Product.reorder_level).all()
+    return db.query(Product).filter(
+        Product.quantity <= Product.reorder_level
+    ).order_by(func.lower(Product.name)).all()
 
 def set_reorder_level(db: Session, name: str, level: int):
     product = get_product(db, name)
