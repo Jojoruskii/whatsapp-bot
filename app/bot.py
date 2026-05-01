@@ -12,8 +12,7 @@ API_KEY = os.getenv("ANTHROPIC_API_KEY")
 BASE_URL = "https://web-production-e8e96.up.railway.app"
 
 
-def build_progress_bar(current: int, reorder_level: int) -> tuple[str, str, int]:
-    """Returns (indicator, bar, pct)"""
+def build_progress_bar(current: int, reorder_level: int) -> tuple:
     max_qty = reorder_level * 4 if reorder_level > 0 else max(current, 1)
     pct = min(100, int((current / max_qty) * 100))
     filled = round(pct / 10)
@@ -21,12 +20,15 @@ def build_progress_bar(current: int, reorder_level: int) -> tuple[str, str, int]
 
     if pct > 50:
         indicator = "🟢"
+        status = "Healthy ✅"
     elif pct > 20:
         indicator = "🟡"
+        status = "Low stock soon"
     else:
         indicator = "🔴"
+        status = None  # will show REORDER NOW
 
-    return indicator, bar, pct
+    return indicator, bar, pct, status
 
 
 def parse_with_claude(msg: str):
@@ -187,34 +189,55 @@ def execute_command(parsed: dict) -> str:
 
             from datetime import datetime
             date_str = datetime.now().strftime("%d %b %Y")
-            lines = [
-                f"📦 *STOCK REPORT — {date_str}*",
-                "━━━━━━━━━━━━━━━━━━━━"
-            ]
-            low = []
-            for p in products:
-                indicator, bar, pct = build_progress_bar(p.quantity, p.reorder_level)
-                lines.append(f"\n{indicator} *{p.name.upper()}*")
-                lines.append(f"   └ {p.quantity} units  {bar}  {pct}%")
-                if p.quantity <= p.reorder_level:
-                    lines.append(f"   ⚠️ _REORDER NOW_")
-                    low.append(p)
 
-            lines.append("\n━━━━━━━━━━━━━━━━━━━━")
-            healthy = len(products) - len(low)
-            lines.append(f"🟢 Healthy: {healthy}  |  🔴 Low: {len(low)}")
+            lines = [
+                f"📦 *INVENTORY DASHBOARD*",
+                f"━━━━━━━━━━━━━━━━━━━━━━━"
+            ]
+
+            critical = []
+            warning = []
+
+            for p in products:
+                indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
+                lines.append(f"{indicator} *{p.name.title()}*")
+                lines.append(f"   ├ Stock: {p.quantity} units")
+                lines.append(f"   ├ Level: {bar} {pct}%")
+                if status:
+                    lines.append(f"   └ Status: {status}")
+                else:
+                    lines.append(f"   └ ⚠️ REORDER NOW")
+                    critical.append(p.name.title())
+
+                if indicator == "🟡":
+                    warning.append(p.name.title())
+
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("📊 *Summary*")
+            lines.append(f"• Total Products: {len(products)}")
+            lines.append(f"• Low Stock: {len(critical)} 🔴")
+            lines.append(f"• Warning: {len(warning)} 🟡")
+
+            if critical:
+                lines.append(f"\n💡 _Tip: Restock {', '.join(critical)} today to avoid stockout_")
+            elif warning:
+                lines.append(f"\n💡 _Tip: Keep an eye on {', '.join(warning)}_")
+            else:
+                lines.append(f"\n💡 _All products well stocked as of {date_str}_ ✅")
+
             return "\n".join(lines)
 
         elif action == "lowstock":
             items = get_low_stock(db)
             if not items:
                 return "✅ All stock levels are healthy."
-            lines = ["⚠️ *Low Stock Alert:*"]
+            lines = ["⚠️ *Low Stock Alert:*\n"]
             for p in items:
-                indicator, bar, pct = build_progress_bar(p.quantity, p.reorder_level)
-                lines.append(f"\n🔴 *{p.name.upper()}*")
-                lines.append(f"   └ {p.quantity} units  {bar}  {pct}%")
-                lines.append(f"   └ Reorder level: {p.reorder_level} units")
+                indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
+                lines.append(f"🔴 *{p.name.title()}*")
+                lines.append(f"   ├ Stock: {p.quantity} units")
+                lines.append(f"   ├ Level: {bar} {pct}%")
+                lines.append(f"   └ Reorder level: {p.reorder_level} units\n")
             return "\n".join(lines)
 
         elif action == "export":
@@ -261,15 +284,15 @@ def execute_command(parsed: dict) -> str:
                     continue
                 if bulk_action == "add":
                     p = add_stock(db, name, q)
-                    lines.append(f"• *{p.name}*: {q} units added → {p.quantity} total")
+                    lines.append(f"• *{p.name.title()}*: {q} units added → {p.quantity} total")
                 else:
                     p, error = remove_stock(db, name, q)
                     if error:
-                        lines.append(f"• *{name}*: ❌ {error}")
+                        lines.append(f"• *{name.title()}*: ❌ {error}")
                         continue
-                    lines.append(f"• *{p.name}*: {q} units removed → {p.quantity} remaining")
+                    lines.append(f"• *{p.name.title()}*: {q} units removed → {p.quantity} remaining")
                     if p.quantity <= p.reorder_level:
-                        warnings.append(f"🚨 *{p.name}* is low: {p.quantity} units left!")
+                        warnings.append(f"🚨 *{p.name.title()}* is low: {p.quantity} units left!")
 
             if warnings:
                 lines.append("\n" + "\n".join(warnings))
@@ -279,7 +302,7 @@ def execute_command(parsed: dict) -> str:
             if not product or not qty:
                 return "❌ I couldn't figure out what to add. Try: add rice 10"
             p = add_stock(db, product, qty)
-            return f"✅ Added {qty} units of *{p.name}*.\nNew total: {p.quantity} units."
+            return f"✅ Added {qty} units of *{p.name.title()}*.\nNew total: {p.quantity} units."
 
         elif action == "remove":
             if not product or not qty:
@@ -287,11 +310,11 @@ def execute_command(parsed: dict) -> str:
             p, error = remove_stock(db, product, qty)
             if error:
                 return f"❌ {error}"
-            reply = f"✅ Removed {qty} units of *{p.name}*.\nRemaining: {p.quantity} units."
+            reply = f"✅ Removed {qty} units of *{p.name.title()}*.\nRemaining: {p.quantity} units."
             if p.quantity <= p.reorder_level:
                 reply += (
                     f"\n\n🚨 *Low Stock Warning!*\n"
-                    f"*{p.name}* is down to {p.quantity} units.\n"
+                    f"*{p.name.title()}* is down to {p.quantity} units.\n"
                     f"Reorder level: {p.reorder_level} units. Please restock soon!"
                 )
             return reply
