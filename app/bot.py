@@ -12,6 +12,23 @@ API_KEY = os.getenv("ANTHROPIC_API_KEY")
 BASE_URL = "https://web-production-e8e96.up.railway.app"
 
 
+def build_progress_bar(current: int, reorder_level: int) -> tuple[str, str, int]:
+    """Returns (indicator, bar, pct)"""
+    max_qty = reorder_level * 4 if reorder_level > 0 else max(current, 1)
+    pct = min(100, int((current / max_qty) * 100))
+    filled = round(pct / 10)
+    bar = "▓" * filled + "░" * (10 - filled)
+
+    if pct > 50:
+        indicator = "🟢"
+    elif pct > 20:
+        indicator = "🟡"
+    else:
+        indicator = "🔴"
+
+    return indicator, bar, pct
+
+
 def parse_with_claude(msg: str):
     prompt = f"""You are an inventory bot parser. Extract the intent from this message.
 
@@ -79,7 +96,6 @@ def parse_keyword(msg: str) -> dict | None:
     if msg in ["menu", "help", "commands", "features", "hi", "hello", "start"]:
         return {"action": "menu", "product": None, "qty": None}
 
-    # delete rice
     match = re.match(r"^delete\s+([a-zA-Z ]+)$", msg)
     if match:
         return {"action": "delete", "product": match.group(1).strip(), "qty": None}
@@ -167,18 +183,26 @@ def execute_command(parsed: dict) -> str:
         elif action == "stock":
             products = get_all_products(db)
             if not products:
-                return "📦 No products in inventory yet. Type *menu* to see available commands."
-            lines = ["📦 *Current Inventory:*"]
+                return "📦 No products in inventory yet.\nType *menu* to see available commands."
+
+            from datetime import datetime
+            date_str = datetime.now().strftime("%d %b %Y")
+            lines = [
+                f"📦 *STOCK REPORT — {date_str}*",
+                "━━━━━━━━━━━━━━━━━━━━"
+            ]
             low = []
             for p in products:
-                status = "⚠️" if p.quantity <= p.reorder_level else "✅"
-                lines.append(f"{status} {p.name}: {p.quantity} units")
+                indicator, bar, pct = build_progress_bar(p.quantity, p.reorder_level)
+                lines.append(f"\n{indicator} *{p.name.upper()}*")
+                lines.append(f"   └ {p.quantity} units  {bar}  {pct}%")
                 if p.quantity <= p.reorder_level:
+                    lines.append(f"   ⚠️ _REORDER NOW_")
                     low.append(p)
-            if low:
-                lines.append("\n🚨 *Low Stock Alert:*")
-                for p in low:
-                    lines.append(f"• *{p.name}* needs restocking — only {p.quantity} units left!")
+
+            lines.append("\n━━━━━━━━━━━━━━━━━━━━")
+            healthy = len(products) - len(low)
+            lines.append(f"🟢 Healthy: {healthy}  |  🔴 Low: {len(low)}")
             return "\n".join(lines)
 
         elif action == "lowstock":
@@ -187,7 +211,10 @@ def execute_command(parsed: dict) -> str:
                 return "✅ All stock levels are healthy."
             lines = ["⚠️ *Low Stock Alert:*"]
             for p in items:
-                lines.append(f"- {p.name}: {p.quantity} units (reorder level: {p.reorder_level})")
+                indicator, bar, pct = build_progress_bar(p.quantity, p.reorder_level)
+                lines.append(f"\n🔴 *{p.name.upper()}*")
+                lines.append(f"   └ {p.quantity} units  {bar}  {pct}%")
+                lines.append(f"   └ Reorder level: {p.reorder_level} units")
             return "\n".join(lines)
 
         elif action == "export":
@@ -246,7 +273,6 @@ def execute_command(parsed: dict) -> str:
 
             if warnings:
                 lines.append("\n" + "\n".join(warnings))
-
             return "\n".join(lines)
 
         elif action == "add":
