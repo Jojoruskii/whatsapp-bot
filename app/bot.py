@@ -5,7 +5,7 @@ import urllib.request
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
-from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product
+from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product, reset_inventory, clear_stock
 from app.database import SessionLocal
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
@@ -17,17 +17,12 @@ def build_progress_bar(current: int, reorder_level: int) -> tuple:
     pct = min(100, int((current / max_qty) * 100))
     filled = round(pct / 10)
     bar = "▓" * filled + "░" * (10 - filled)
-
     if pct > 50:
-        indicator = "🟢"
-        status = "✅"
+        indicator, status = "🟢", "✅"
     elif pct > 20:
-        indicator = "🟡"
-        status = "⚠️"
+        indicator, status = "🟡", "⚠️"
     else:
-        indicator = "🔴"
-        status = "🚨"
-
+        indicator, status = "🔴", "🚨"
     return indicator, bar, pct, status
 
 
@@ -37,22 +32,22 @@ def parse_with_claude(msg: str):
 Message: "{msg}"
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "delete" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "delete" or "reset" or "clearstock" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "items": [{{"product": "name", "qty": number}}] or null}}
 
 Rules:
 - action is "add" if user wants to add/restock/received a single item
 - action is "remove" if user wants to remove/sold/used/dispatched a single item
-- action is "multi" if user mentions multiple products in one message - put them all in "items" array
+- action is "multi" if user mentions multiple products in one message
 - action is "stock" if user wants to see all inventory
 - action is "lowstock" if user wants to see low stock items
-- action is "export" if user wants to download/export/get the stock sheet or spreadsheet
-- action is "setlevel" if user wants to set/change/update the reorder or warning level for a product
-- action is "delete" if user wants to delete/remove entirely/erase a product from the system
-- action is "menu" if user wants help, commands, or a list of features
-- for "multi" action, also include whether it is "add" or "remove" as a separate key called "bulk_action"
+- action is "export" if user wants to download/export the stock sheet
+- action is "setlevel" if user wants to set the reorder level for a product
+- action is "delete" if user wants to delete a single product entirely
+- action is "reset" if user wants to delete ALL products and wipe the entire inventory
+- action is "clearstock" if user wants to zero out all quantities but keep the product list
+- action is "menu" if user wants help or a list of features
+- for "multi" action, include "bulk_action" as "add" or "remove"
 - for "setlevel" action, put the threshold number in "level" field
-- product and qty are null for multi, stock, lowstock, export and menu actions
-- qty must be a positive integer or null
 - If you cannot determine the intent, return {{"action": null, "product": null, "qty": null, "items": null}}"""
 
     payload = json.dumps({
@@ -88,15 +83,16 @@ def parse_keyword(msg: str) -> dict | None:
 
     if msg in ["stock", "inventory", "show stock"]:
         return {"action": "stock", "product": None, "qty": None}
-
     if msg == "lowstock":
         return {"action": "lowstock", "product": None, "qty": None}
-
     if msg in ["export", "download", "send stock", "stock sheet", "spreadsheet"]:
         return {"action": "export", "product": None, "qty": None}
-
     if msg in ["menu", "help", "commands", "features", "hi", "hello", "start"]:
         return {"action": "menu", "product": None, "qty": None}
+    if msg in ["reset", "reset inventory", "wipe inventory", "delete all"]:
+        return {"action": "reset", "product": None, "qty": None}
+    if msg in ["clearstock", "clear stock", "zero stock", "reset stock"]:
+        return {"action": "clearstock", "product": None, "qty": None}
 
     match = re.match(r"^delete\s+([a-zA-Z ]+)$", msg)
     if match:
@@ -130,19 +126,11 @@ def parse_keyword(msg: str) -> dict | None:
 
     match = re.match(r"^(add|remove)\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
-        return {
-            "action": match.group(1),
-            "product": match.group(2).strip(),
-            "qty": int(match.group(3))
-        }
+        return {"action": match.group(1), "product": match.group(2).strip(), "qty": int(match.group(3))}
 
     match = re.match(r"^(add|remove)\s+(\d+)\s+([a-zA-Z ]+)$", msg)
     if match:
-        return {
-            "action": match.group(1),
-            "product": match.group(3).strip(),
-            "qty": int(match.group(2))
-        }
+        return {"action": match.group(1), "product": match.group(3).strip(), "qty": int(match.group(2))}
 
     return None
 
@@ -163,6 +151,9 @@ def get_menu() -> str:
         "🗑️ *Delete:* `delete rice`\n"
         "⚙️ *Set level:* `setlevel rice 15`\n"
         "📊 *Export:* `export`\n\n"
+        "🔴 *Danger Zone*\n"
+        "• `clearstock` — zero all quantities\n"
+        "• `reset` — wipe entire inventory\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "💡 _Or just type naturally_"
     )
@@ -182,11 +173,8 @@ def execute_command(parsed: dict) -> str:
             products = get_all_products(db)
             if not products:
                 return "📦 No products yet.\nType *menu* to see commands."
-
             lines = ["📦 *INVENTORY DASHBOARD*", "━━━━━━━━━━━━━━━━━━━━━━━"]
-            critical = []
-            warning = []
-
+            critical, warning = [], []
             for p in products:
                 indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
                 lines.append(f"{indicator} *{p.name.title()}* {status}")
@@ -195,17 +183,14 @@ def execute_command(parsed: dict) -> str:
                     critical.append(p.name.title())
                 elif indicator == "🟡":
                     warning.append(p.name.title())
-
             lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
             lines.append(f"Total: {len(products)}  🔴 {len(critical)}  🟡 {len(warning)}")
-
             if critical:
                 lines.append(f"💡 Restock: {', '.join(critical)}")
             elif warning:
                 lines.append(f"💡 Watch: {', '.join(warning)}")
             else:
                 lines.append("💡 All products well stocked ✅")
-
             return "\n".join(lines)
 
         elif action == "lowstock":
@@ -235,6 +220,22 @@ def execute_command(parsed: dict) -> str:
                 return f"❌ {error}"
             return f"🗑️ *{product.title()}* deleted from inventory."
 
+        elif action == "reset":
+            count = reset_inventory(db)
+            return (
+                f"🗑️ *Inventory Reset Complete*\n"
+                f"All {count} products have been permanently deleted.\n"
+                f"Your inventory is now empty."
+            )
+
+        elif action == "clearstock":
+            count = clear_stock(db)
+            return (
+                f"🔄 *Stock Cleared*\n"
+                f"All {count} products have been zeroed out.\n"
+                f"Product list is kept but all quantities are now 0."
+            )
+
         elif action == "setlevel":
             level = parsed.get("level")
             if not product or level is None:
@@ -242,19 +243,15 @@ def execute_command(parsed: dict) -> str:
             p, error = set_reorder_level(db, product, level)
             if error:
                 return f"❌ {error}"
-            return (
-                f"✅ *{p.name.title()}* reorder level set to *{p.reorder_level} units*."
-            )
+            return f"✅ *{p.name.title()}* reorder level set to *{p.reorder_level} units*."
 
         elif action == "multi":
             bulk_action = parsed.get("bulk_action", "add")
             items = parsed.get("items", [])
             if not items:
                 return "❌ Try: add rice 10, maize 20, sugar 5"
-
             lines = [f"{'✅ Added' if bulk_action == 'add' else '✅ Removed'}:\n"]
             warnings = []
-
             for item in items:
                 name = item.get("product")
                 q = item.get("qty")
@@ -271,7 +268,6 @@ def execute_command(parsed: dict) -> str:
                     lines.append(f"• *{p.name.title()}*: -{q} → {p.quantity} left")
                     if p.quantity <= p.reorder_level:
                         warnings.append(f"🚨 {p.name.title()}: only {p.quantity} left!")
-
             if warnings:
                 lines.append("\n" + "\n".join(warnings))
             return "\n".join(lines)
@@ -306,15 +302,12 @@ def execute_command(parsed: dict) -> str:
 
 def handle_message(incoming_msg: str) -> str:
     parsed = parse_keyword(incoming_msg)
-
     if not parsed:
         parsed = parse_with_claude(incoming_msg)
-
     if parsed and parsed.get("action"):
         result = execute_command(parsed)
         if result:
             return result
-
     return get_menu()
 
 
@@ -322,7 +315,6 @@ async def whatsapp_webhook(request: Request):
     form = await request.form()
     incoming_msg = form.get("Body", "")
     reply = handle_message(incoming_msg)
-
     resp = MessagingResponse()
     resp.message(reply)
     return PlainTextResponse(str(resp), media_type="application/xml")

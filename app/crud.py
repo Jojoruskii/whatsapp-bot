@@ -37,6 +37,21 @@ def delete_product(db: Session, name: str):
     db.commit()
     return True, None
 
+def reset_inventory(db: Session):
+    """Delete all products entirely"""
+    count = db.query(Product).count()
+    db.query(Product).delete()
+    db.commit()
+    return count
+
+def clear_stock(db: Session):
+    """Zero out all quantities but keep products"""
+    products = db.query(Product).all()
+    for p in products:
+        p.quantity = 0
+    db.commit()
+    return len(products)
+
 def get_all_products(db: Session):
     return db.query(Product).all()
 
