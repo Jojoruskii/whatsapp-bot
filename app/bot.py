@@ -168,6 +168,76 @@ def get_menu() -> str:
     )
 
 
+def build_dashboard(products: list) -> str:
+    if not products:
+        return "📦 No products yet.\nType *menu* to see commands."
+
+    categories = {}
+    for p in products:
+        cat = p.category or "Uncategorized"
+        categories.setdefault(cat, []).append(p)
+
+    out_products = []
+    low_products = []
+    healthy_count = 0
+
+    for p in products:
+        indicator, _, _, _ = build_progress_bar(p.quantity, p.reorder_level)
+        if indicator == "🔴":
+            out_products.append(p.name.title())
+        elif indicator == "🟡":
+            low_products.append(p.name.title())
+        else:
+            healthy_count += 1
+
+    date_str = datetime.now().strftime("%d %b %Y").upper()
+
+    # calculate padding
+    max_cat_len = max(len(cat) for cat in categories.keys())
+    max_cat_len = max(max_cat_len, 13)  # min width for header
+
+    lines = [
+        f"📦 INVENTORY · {date_str}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"  {'CATEGORY'.ljust(max_cat_len + 4)}  QTY   STATUS",
+        f"  {'─' * (max_cat_len + 18)}"
+    ]
+
+    for cat, items in sorted(categories.items()):
+        emoji = get_category_emoji(cat)
+        count = len(items)
+        cat_critical = sum(1 for p in items if p.quantity <= p.reorder_level)
+        cat_warning = sum(1 for p in items if p.reorder_level < p.quantity <= p.reorder_level * 2)
+
+        if cat_critical:
+            status = "🚨 OUT"
+        elif cat_warning:
+            status = "⚠️  LOW"
+        else:
+            status = "✅ OK "
+
+        cat_label = f"[{emoji}] {cat}".ljust(max_cat_len + 4)
+        qty_label = str(count).rjust(3)
+        lines.append(f"  {cat_label}  {qty_label}   {status}")
+
+    lines.append(f"  {'─' * (max_cat_len + 18)}")
+    lines.append(f"  {len(products)} products · {len(categories)} categories")
+    lines.append(f"  {'─' * (max_cat_len + 18)}")
+
+    if out_products:
+        lines.append(f"  [🚨] OUT · {', '.join(out_products)}")
+        lines.append(f"          ↳ restock now!")
+    if low_products:
+        lines.append(f"  [⚠️] LOW · {', '.join(low_products)}")
+        lines.append(f"          ↳ running low")
+
+    lines.append(f"  [✅] {healthy_count} of {len(products)} products healthy")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("  📌 stock <category> for details")
+
+    return "\n".join(lines)
+
+
 def execute_command(parsed: dict) -> str:
     action = parsed.get("action")
     product = parsed.get("product")
@@ -180,62 +250,7 @@ def execute_command(parsed: dict) -> str:
 
         elif action == "stock":
             products = get_all_products(db)
-            if not products:
-                return "📦 No products yet.\nType *menu* to see commands."
-
-            categories = {}
-            for p in products:
-                cat = p.category or "Uncategorized"
-                categories.setdefault(cat, []).append(p)
-
-            critical, warning = [], []
-            for p in products:
-                indicator, _, _, _ = build_progress_bar(p.quantity, p.reorder_level)
-                if indicator == "🔴":
-                    critical.append(p.name.title())
-                elif indicator == "🟡":
-                    warning.append(p.name.title())
-
-            date_str = datetime.now().strftime("%d %b %Y")
-
-            # calculate max category name length for alignment
-            max_cat_len = max(len(cat) for cat in categories.keys())
-            max_count_len = max(len(str(len(items))) for items in categories.values())
-
-            lines = [
-                f"📦 *INVENTORY — {date_str}*",
-                "━━━━━━━━━━━━━━━━━━━━━━━"
-            ]
-
-            for cat, items in sorted(categories.items()):
-                emoji = get_category_emoji(cat)
-                count = len(items)
-                cat_critical = sum(1 for p in items if p.quantity <= p.reorder_level)
-                cat_warning = sum(1 for p in items if p.reorder_level < p.quantity <= p.reorder_level * 2)
-
-                if cat_critical:
-                    health = "🔴"
-                elif cat_warning:
-                    health = "⚠️"
-                else:
-                    health = "✅"
-
-                cat_padded = cat.ljust(max_cat_len)
-                count_str = f"{count} item{'s' if count != 1 else ''}".rjust(max_count_len + 6)
-                lines.append(f"{emoji} {cat_padded}  {count_str}  {health}")
-
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-            lines.append(f"{len(products)} products · 🔴 {len(critical)} · 🟡 {len(warning)}")
-
-            if critical:
-                lines.append(f"⚡ Restock: {', '.join(critical)}")
-            elif warning:
-                lines.append(f"⚡ Watch: {', '.join(warning)}")
-            else:
-                lines.append("⚡ All products well stocked")
-
-            lines.append("📌 _stock <category> for details_")
-            return "\n".join(lines)
+            return build_dashboard(products)
 
         elif action == "lowstock":
             items = get_low_stock(db)
@@ -246,9 +261,9 @@ def execute_command(parsed: dict) -> str:
                 indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
                 cat = p.category or "Uncategorized"
                 emoji = get_category_emoji(cat)
-                lines.append(f"🔴 *{p.name.title()}* {emoji}")
-                lines.append(f"   {p.quantity} units  {bar} {pct}%")
-                lines.append(f"   Reorder at: {p.reorder_level} units\n")
+                lines.append(f"[🔴] *{p.name.title()}* [{emoji}]")
+                lines.append(f"     {p.quantity} units  {bar} {pct}%")
+                lines.append(f"     ↳ reorder at: {p.reorder_level} units\n")
             return "\n".join(lines)
 
         elif action == "export":
@@ -291,7 +306,7 @@ def execute_command(parsed: dict) -> str:
             if error:
                 return f"❌ {error}"
             emoji = get_category_emoji(p.category.lower())
-            return f"✅ *{p.name.title()}* moved to {emoji} *{p.category}*."
+            return f"✅ *{p.name.title()}* moved to [{emoji}] *{p.category}*."
 
         elif action == "add":
             if not product or not qty:
@@ -301,8 +316,8 @@ def execute_command(parsed: dict) -> str:
             emoji = get_category_emoji(category.lower())
             return (
                 f"✅ Added {qty} units of *{p.name.title()}*.\n"
-                f"New total: {p.quantity} units.\n"
-                f"Category: {emoji} {p.category}"
+                f"   New total: {p.quantity} units\n"
+                f"   Category: [{emoji}] {p.category}"
             )
 
         elif action == "multi":
@@ -321,15 +336,15 @@ def execute_command(parsed: dict) -> str:
                     category = guess_category(name)
                     p = add_stock(db, name, q, category)
                     emoji = get_category_emoji(category.lower())
-                    lines.append(f"• *{p.name.title()}*: +{q} → {p.quantity} total {emoji}")
+                    lines.append(f"  [{emoji}] *{p.name.title()}*: +{q} → {p.quantity} total")
                 else:
                     p, error = remove_stock(db, name, q)
                     if error:
-                        lines.append(f"• *{name.title()}*: ❌ {error}")
+                        lines.append(f"  [❌] *{name.title()}*: {error}")
                         continue
-                    lines.append(f"• *{p.name.title()}*: -{q} → {p.quantity} left")
+                    lines.append(f"  [✅] *{p.name.title()}*: -{q} → {p.quantity} left")
                     if p.quantity <= p.reorder_level:
-                        warnings.append(f"🚨 {p.name.title()}: only {p.quantity} left!")
+                        warnings.append(f"  [🚨] {p.name.title()}: only {p.quantity} left!\n       ↳ restock now!")
             if warnings:
                 lines.append("\n" + "\n".join(warnings))
             return "\n".join(lines)
@@ -340,12 +355,13 @@ def execute_command(parsed: dict) -> str:
             p, error = remove_stock(db, product, qty)
             if error:
                 return f"❌ {error}"
-            reply = f"✅ Removed {qty} units of *{p.name.title()}*.\nRemaining: {p.quantity} units."
+            reply = f"✅ Removed {qty} units of *{p.name.title()}*.\n   Remaining: {p.quantity} units."
             if p.quantity <= p.reorder_level:
                 reply += (
-                    f"\n\n🚨 *Low Stock Warning!*\n"
-                    f"*{p.name.title()}* is down to {p.quantity} units.\n"
-                    f"Reorder level: {p.reorder_level} units. Restock soon!"
+                    f"\n\n[🚨] Low Stock Warning!\n"
+                    f"   *{p.name.title()}* → {p.quantity} units left\n"
+                    f"   ↳ reorder level: {p.reorder_level} units\n"
+                    f"   ↳ restock now!"
                 )
             return reply
 
@@ -369,11 +385,18 @@ def handle_message(incoming_msg: str) -> str:
             if not items:
                 return f"❌ No products found in *{category.title()}*."
             emoji = get_category_emoji(category.lower())
-            lines = [f"{emoji} *{category.upper()}*", "━━━━━━━━━━━━━━━━━━━━━━━"]
+            date_str = datetime.now().strftime("%d %b %Y").upper()
+            lines = [
+                f"[{emoji}] {category.upper()} · {date_str}",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ]
+            max_name_len = max(len(p.name.title()) for p in items)
             for p in items:
                 indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
-                lines.append(f"{indicator} *{p.name.title()}* {status}")
-                lines.append(f"   {p.quantity} units  {bar} {pct}%")
+                name_padded = p.name.title().ljust(max_name_len)
+                lines.append(f"  {indicator} {name_padded}  {str(p.quantity).rjust(4)} units")
+                lines.append(f"     {bar} {pct}%")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
             return "\n".join(lines)
         finally:
             db.close()
