@@ -7,29 +7,20 @@ from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
 from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product, reset_inventory, clear_stock, set_category
 from app.database import SessionLocal
+from app.categorizer import guess_category
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
 BASE_URL = "https://web-production-e8e96.up.railway.app"
 
 CATEGORY_EMOJIS = {
-    "grains": "🌾",
-    "dairy": "🥛",
-    "cleaning": "🧴",
-    "beverages": "🥤",
-    "snacks": "🍿",
-    "produce": "🥬",
-    "meat": "🥩",
-    "bakery": "🍞",
-    "frozen": "🧊",
-    "household": "🏠",
-    "personal care": "🪥",
-    "condiments": "🧂",
-    "uncategorized": "📦",
+    "grains": "🌾", "dairy": "🥛", "cleaning": "🧴", "beverages": "🥤",
+    "snacks": "🍿", "produce": "🥬", "meat": "🥩", "bakery": "🍞",
+    "frozen": "🧊", "household": "🏠", "personal care": "🪥",
+    "condiments": "🧂", "uncategorized": "📦",
 }
 
 def get_category_emoji(category: str) -> str:
     return CATEGORY_EMOJIS.get(category.lower(), "📦")
-
 
 def build_progress_bar(current: int, reorder_level: int) -> tuple:
     max_qty = reorder_level * 4 if reorder_level > 0 else max(current, 1)
@@ -43,40 +34,6 @@ def build_progress_bar(current: int, reorder_level: int) -> tuple:
     else:
         indicator, status = "🔴", "🚨"
     return indicator, bar, pct, status
-
-
-from app.categorizer import guess_category
-    prompt = f"""What category does this product belong to?
-Product: "{product_name}"
-
-Choose ONE from: Grains, Dairy, Cleaning, Beverages, Snacks, Produce, Meat, Bakery, Frozen, Household, Personal Care, Condiments, Uncategorized
-
-Reply with ONLY the category name, nothing else."""
-
-    payload = json.dumps({
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 10,
-        "messages": [{"role": "user", "content": prompt}]
-    }).encode()
-
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01"
-        },
-        method="POST"
-    )
-
-    try:
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read())
-            return data["content"][0]["text"].strip().title()
-    except Exception:
-        return "Uncategorized"
-
 
 def parse_with_claude(msg: str):
     prompt = f"""You are an inventory bot parser. Extract the intent from this message.
@@ -97,7 +54,7 @@ Rules:
 - action is "delete" if user wants to delete a single product
 - action is "reset" if user wants to wipe the entire inventory
 - action is "clearstock" if user wants to zero all quantities
-- action is "setcategory" if user wants to change or set the category of a product
+- action is "setcategory" if user wants to change the category of a product
 - action is "menu" if user wants help or a list of features
 - for "multi" action, include "bulk_action" as "add" or "remove"
 - for "setlevel" action, put the threshold in "level"
@@ -193,7 +150,8 @@ def get_menu() -> str:
         "👋 *Welcome to Inventory Bot!*\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
         "📦 *Stock Management*\n"
-        "• `stock` — view full inventory\n"
+        "• `stock` — view inventory summary\n"
+        "• `stock grains` — view a category\n"
         "• `lowstock` — view low stock items\n\n"
         "➕ `add rice 10`\n"
         "➖ `remove rice 3`\n"
@@ -224,28 +182,33 @@ def execute_command(parsed: dict) -> str:
             if not products:
                 return "📦 No products yet.\nType *menu* to see commands."
 
-            lines = ["📦 *INVENTORY DASHBOARD*", "━━━━━━━━━━━━━━━━━━━━━━━"]
-            critical, warning = [], []
-
-            # group by category
             categories = {}
             for p in products:
                 cat = p.category or "Uncategorized"
                 categories.setdefault(cat, []).append(p)
 
+            critical, warning = [], []
+            for p in products:
+                indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
+                if indicator == "🔴":
+                    critical.append(p.name.title())
+                elif indicator == "🟡":
+                    warning.append(p.name.title())
+
+            lines = ["📦 *INVENTORY DASHBOARD*", "━━━━━━━━━━━━━━━━━━━━━━━"]
             for cat, items in sorted(categories.items()):
                 emoji = get_category_emoji(cat)
-                lines.append(f"\n{emoji} *{cat.upper()}*")
-                for p in items:
-                    indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
-                    lines.append(f"{indicator} *{p.name.title()}* {status}")
-                    lines.append(f"   {p.quantity} units  {bar} {pct}%")
-                    if indicator == "🔴":
-                        critical.append(p.name.title())
-                    elif indicator == "🟡":
-                        warning.append(p.name.title())
+                cat_critical = sum(1 for p in items if p.quantity <= p.reorder_level)
+                cat_warning = sum(1 for p in items if p.reorder_level < p.quantity <= p.reorder_level * 2)
+                if cat_critical:
+                    health = f"— {cat_critical} low stock 🔴"
+                elif cat_warning:
+                    health = f"— {cat_warning} warning 🟡"
+                else:
+                    health = "— all healthy ✅"
+                lines.append(f"{emoji} *{cat}* ({len(items)}) {health}")
 
-            lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
             lines.append(f"Total: {len(products)}  🔴 {len(critical)}  🟡 {len(warning)}")
             if critical:
                 lines.append(f"💡 Restock: {', '.join(critical)}")
@@ -253,6 +216,7 @@ def execute_command(parsed: dict) -> str:
                 lines.append(f"💡 Watch: {', '.join(warning)}")
             else:
                 lines.append("💡 All products well stocked ✅")
+            lines.append("\n_Type_ `stock <category>` _for details_")
             return "\n".join(lines)
 
         elif action == "lowstock":
@@ -304,7 +268,7 @@ def execute_command(parsed: dict) -> str:
         elif action == "setcategory":
             category = parsed.get("category")
             if not product or not category:
-                return "❌ Format: setcategory <product> <category>\nExample: setcategory rice grains"
+                return "❌ Format: setcategory <product> <category>"
             p, error = set_category(db, product, category)
             if error:
                 return f"❌ {error}"
@@ -375,6 +339,28 @@ def execute_command(parsed: dict) -> str:
 
 
 def handle_message(incoming_msg: str) -> str:
+    msg = incoming_msg.strip().lower()
+
+    # handle "stock <category>" drill-down
+    cat_match = re.match(r"^stock\s+([a-zA-Z ]+)$", msg)
+    if cat_match:
+        category = cat_match.group(1).strip()
+        db = SessionLocal()
+        try:
+            products = get_all_products(db)
+            items = [p for p in products if (p.category or "uncategorized").lower() == category.lower()]
+            if not items:
+                return f"❌ No products found in *{category.title()}* category."
+            emoji = get_category_emoji(category.lower())
+            lines = [f"{emoji} *{category.upper()} STOCK*", "━━━━━━━━━━━━━━━━━━━━━━━"]
+            for p in items:
+                indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
+                lines.append(f"{indicator} *{p.name.title()}* {status}")
+                lines.append(f"   {p.quantity} units  {bar} {pct}%")
+            return "\n".join(lines)
+        finally:
+            db.close()
+
     parsed = parse_keyword(incoming_msg)
     if not parsed:
         parsed = parse_with_claude(incoming_msg)
