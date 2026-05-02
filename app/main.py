@@ -98,3 +98,15 @@ async def autocategorize(db: Session = Depends(get_db)):
             updated.append({"name": p.name, "category": p.category})
     db.commit()
     return {"updated": updated}
+
+@app.post("/bulkcategorize")
+def bulk_categorize(db: Session = Depends(get_db)):
+    from app.categorizer import guess_category
+    products = get_all_products(db)
+    updated = []
+    for p in products:
+        category = guess_category(p.name)
+        p.category = category
+        updated.append({"name": p.name, "category": category})
+    db.commit()
+    return {"updated": updated}
