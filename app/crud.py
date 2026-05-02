@@ -2,9 +2,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.models import Product
 
+def normalize(name: str) -> str:
+    """Remove spaces and lowercase — 'Cooking Oil' becomes 'cookingoil'"""
+    return name.strip().lower().replace(" ", "")
+
 def get_product(db: Session, name: str):
     return db.query(Product).filter(
-        func.lower(Product.name) == name.strip().lower()
+        func.lower(func.replace(Product.name, " ", "")) == normalize(name)
     ).first()
 
 def add_stock(db: Session, name: str, qty: int, category: str = None):
@@ -14,7 +18,7 @@ def add_stock(db: Session, name: str, qty: int, category: str = None):
         if category:
             product.category = category
     else:
-        product = Product(name=name.strip().lower(), quantity=qty, category=category or "Uncategorized")
+        product = Product(name=normalize(name), quantity=qty, category=category or "Uncategorized")
         db.add(product)
     db.commit()
     db.refresh(product)
