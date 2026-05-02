@@ -2,6 +2,7 @@ import os
 import re
 import json
 import urllib.request
+from datetime import datetime
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
@@ -189,34 +190,47 @@ def execute_command(parsed: dict) -> str:
 
             critical, warning = [], []
             for p in products:
-                indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
+                indicator, _, _, _ = build_progress_bar(p.quantity, p.reorder_level)
                 if indicator == "🔴":
                     critical.append(p.name.title())
                 elif indicator == "🟡":
                     warning.append(p.name.title())
 
-            lines = ["📦 *INVENTORY DASHBOARD*", "━━━━━━━━━━━━━━━━━━━━━━━"]
+            date_str = datetime.now().strftime("%d %b %Y")
+            lines = [
+                f"📦 *INVENTORY — {date_str}*",
+                "━━━━━━━━━━━━━━━━━━━━━━━"
+            ]
+
             for cat, items in sorted(categories.items()):
                 emoji = get_category_emoji(cat)
+                count = len(items)
                 cat_critical = sum(1 for p in items if p.quantity <= p.reorder_level)
                 cat_warning = sum(1 for p in items if p.reorder_level < p.quantity <= p.reorder_level * 2)
+
                 if cat_critical:
-                    health = f"— {cat_critical} low stock 🔴"
+                    health = "🔴"
                 elif cat_warning:
-                    health = f"— {cat_warning} warning 🟡"
+                    health = "⚠️"
                 else:
-                    health = "— all healthy ✅"
-                lines.append(f"{emoji} *{cat}* ({len(items)}) {health}")
+                    health = "✅"
+
+                # pad category name for alignment
+                cat_label = cat[:10].ljust(10)
+                item_label = f"{count} item{'s' if count != 1 else ''} "
+                lines.append(f"{emoji} {cat_label} {item_label} {health}")
 
             lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
-            lines.append(f"Total: {len(products)}  🔴 {len(critical)}  🟡 {len(warning)}")
+            lines.append(f"{len(products)} products · 🔴 {len(critical)} · 🟡 {len(warning)}")
+
             if critical:
-                lines.append(f"💡 Restock: {', '.join(critical)}")
+                lines.append(f"⚡ Restock: {', '.join(critical)}")
             elif warning:
-                lines.append(f"💡 Watch: {', '.join(warning)}")
+                lines.append(f"⚡ Watch: {', '.join(warning)}")
             else:
-                lines.append("💡 All products well stocked ✅")
-            lines.append("\n_Type_ `stock <category>` _for details_")
+                lines.append("⚡ All products well stocked")
+
+            lines.append("📌 _stock <category> for details_")
             return "\n".join(lines)
 
         elif action == "lowstock":
@@ -341,7 +355,6 @@ def execute_command(parsed: dict) -> str:
 def handle_message(incoming_msg: str) -> str:
     msg = incoming_msg.strip().lower()
 
-    # handle "stock <category>" drill-down
     cat_match = re.match(r"^stock\s+([a-zA-Z ]+)$", msg)
     if cat_match:
         category = cat_match.group(1).strip()
@@ -350,9 +363,9 @@ def handle_message(incoming_msg: str) -> str:
             products = get_all_products(db)
             items = [p for p in products if (p.category or "uncategorized").lower() == category.lower()]
             if not items:
-                return f"❌ No products found in *{category.title()}* category."
+                return f"❌ No products found in *{category.title()}*."
             emoji = get_category_emoji(category.lower())
-            lines = [f"{emoji} *{category.upper()} STOCK*", "━━━━━━━━━━━━━━━━━━━━━━━"]
+            lines = [f"{emoji} *{category.upper()}*", "━━━━━━━━━━━━━━━━━━━━━━━"]
             for p in items:
                 indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
                 lines.append(f"{indicator} *{p.name.title()}* {status}")
