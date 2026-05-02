@@ -197,6 +197,11 @@ def execute_command(parsed: dict) -> str:
                     warning.append(p.name.title())
 
             date_str = datetime.now().strftime("%d %b %Y")
+
+            # calculate max category name length for alignment
+            max_cat_len = max(len(cat) for cat in categories.keys())
+            max_count_len = max(len(str(len(items))) for items in categories.values())
+
             lines = [
                 f"📦 *INVENTORY — {date_str}*",
                 "━━━━━━━━━━━━━━━━━━━━━━━"
@@ -215,10 +220,9 @@ def execute_command(parsed: dict) -> str:
                 else:
                     health = "✅"
 
-                # pad category name for alignment
-                cat_label = cat[:10].ljust(10)
-                item_label = f"{count} item{'s' if count != 1 else ''} "
-                lines.append(f"{emoji} {cat_label} {item_label} {health}")
+                cat_padded = cat.ljust(max_cat_len)
+                count_str = f"{count} item{'s' if count != 1 else ''}".rjust(max_count_len + 6)
+                lines.append(f"{emoji} {cat_padded}  {count_str}  {health}")
 
             lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
             lines.append(f"{len(products)} products · 🔴 {len(critical)} · 🟡 {len(warning)}")
