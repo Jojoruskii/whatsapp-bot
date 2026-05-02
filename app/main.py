@@ -89,7 +89,7 @@ def migrate(db: Session = Depends(get_db)):
 
 @app.get("/autocategorize")
 async def autocategorize(db: Session = Depends(get_db)):
-    from app.bot import guess_category
+    from app.categorizer import guess_category
     products = get_all_products(db)
     updated = []
     for p in products:

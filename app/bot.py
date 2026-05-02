@@ -45,7 +45,7 @@ def build_progress_bar(current: int, reorder_level: int) -> tuple:
     return indicator, bar, pct, status
 
 
-def guess_category(product_name: str) -> str:
+from app.categorizer import guess_category
     prompt = f"""What category does this product belong to?
 Product: "{product_name}"
 
