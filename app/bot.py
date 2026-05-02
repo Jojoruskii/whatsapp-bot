@@ -191,17 +191,16 @@ def build_dashboard(products: list) -> str:
             healthy_count += 1
 
     date_str = datetime.now().strftime("%d %b %Y").upper()
-
-    # calculate padding
     max_cat_len = max(len(cat) for cat in categories.keys())
-    max_cat_len = max(max_cat_len, 13)  # min width for header
+    max_cat_len = max(max_cat_len, 13)
+    divider = "-" * (max_cat_len + 16)
 
-    lines = [
-        f"📦 INVENTORY · {date_str}",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"  {'CATEGORY'.ljust(max_cat_len + 4)}  QTY   STATUS",
-        f"  {'─' * (max_cat_len + 18)}"
-    ]
+    # build table lines — wrapped in ``` for monospace
+    table = []
+    table.append(f"📦 INVENTORY · {date_str}")
+    table.append(divider)
+    table.append(f"{'CATEGORY'.ljust(max_cat_len)}  QTY  STATUS")
+    table.append(divider)
 
     for cat, items in sorted(categories.items()):
         emoji = get_category_emoji(cat)
@@ -212,30 +211,30 @@ def build_dashboard(products: list) -> str:
         if cat_critical:
             status = "🚨 OUT"
         elif cat_warning:
-            status = "⚠️  LOW"
+            status = "⚠️ LOW"
         else:
-            status = "✅ OK "
+            status = "✅ OK"
 
-        cat_label = f"[{emoji}] {cat}".ljust(max_cat_len + 4)
-        qty_label = str(count).rjust(3)
-        lines.append(f"  {cat_label}  {qty_label}   {status}")
+        cat_label = f"{emoji} {cat}".ljust(max_cat_len)
+        qty_str = str(count).rjust(3)
+        table.append(f"{cat_label}  {qty_str}  {status}")
 
-    lines.append(f"  {'─' * (max_cat_len + 18)}")
-    lines.append(f"  {len(products)} products · {len(categories)} categories")
-    lines.append(f"  {'─' * (max_cat_len + 18)}")
+    table.append(divider)
+    table.append(f"{len(products)} products · {len(categories)} categories")
+    table.append(divider)
 
     if out_products:
-        lines.append(f"  [🚨] OUT · {', '.join(out_products)}")
-        lines.append(f"          ↳ restock now!")
+        table.append(f"[🚨] OUT · {', '.join(out_products)}")
+        table.append(f"        ↳ restock now!")
     if low_products:
-        lines.append(f"  [⚠️] LOW · {', '.join(low_products)}")
-        lines.append(f"          ↳ running low")
+        table.append(f"[⚠️] LOW · {', '.join(low_products)}")
+        table.append(f"        ↳ running low")
 
-    lines.append(f"  [✅] {healthy_count} of {len(products)} products healthy")
-    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("  📌 stock <category> for details")
+    table.append(f"[✅] {healthy_count} of {len(products)} healthy")
+    table.append(divider)
+    table.append("📌 stock <category> for details")
 
-    return "\n".join(lines)
+    return "```\n" + "\n".join(table) + "\n```"
 
 
 def execute_command(parsed: dict) -> str:
@@ -386,18 +385,29 @@ def handle_message(incoming_msg: str) -> str:
                 return f"❌ No products found in *{category.title()}*."
             emoji = get_category_emoji(category.lower())
             date_str = datetime.now().strftime("%d %b %Y").upper()
-            lines = [
-                f"[{emoji}] {category.upper()} · {date_str}",
-                "━━━━━━━━━━━━━━━━━━━━━━━━━"
-            ]
             max_name_len = max(len(p.name.title()) for p in items)
+            divider = "-" * (max_name_len + 20)
+
+            table = []
+            table.append(f"{emoji} {category.upper()} · {date_str}")
+            table.append(divider)
+            table.append(f"{'PRODUCT'.ljust(max_name_len)}   QTY   STATUS")
+            table.append(divider)
             for p in items:
                 indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
                 name_padded = p.name.title().ljust(max_name_len)
-                lines.append(f"  {indicator} {name_padded}  {str(p.quantity).rjust(4)} units")
-                lines.append(f"     {bar} {pct}%")
-            lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━")
-            return "\n".join(lines)
+                qty_str = str(p.quantity).rjust(5)
+                if indicator == "🔴":
+                    stat = "🚨 OUT"
+                elif indicator == "🟡":
+                    stat = "⚠️ LOW"
+                else:
+                    stat = "✅ OK"
+                table.append(f"{name_padded}  {qty_str}   {stat}")
+                table.append(f"  {bar} {pct}%")
+            table.append(divider)
+
+            return "```\n" + "\n".join(table) + "\n```"
         finally:
             db.close()
 
