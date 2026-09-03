@@ -87,18 +87,6 @@ def migrate(db: Session = Depends(get_db)):
     except Exception as e:
         return {"message": f"Already migrated or error: {str(e)}"}
 
-@app.get("/autocategorize")
-async def autocategorize(db: Session = Depends(get_db)):
-    from app.categorizer import guess_category
-    products = get_all_products(db)
-    updated = []
-    for p in products:
-        if not p.category or p.category == "Uncategorized":
-            p.category = guess_category(p.name)
-            updated.append({"name": p.name, "category": p.category})
-    db.commit()
-    return {"updated": updated}
-
 @app.post("/bulkcategorize")
 def bulk_categorize(db: Session = Depends(get_db)):
     from app.categorizer import guess_category
@@ -110,3 +98,9 @@ def bulk_categorize(db: Session = Depends(get_db)):
         updated.append({"name": p.name, "category": category})
     db.commit()
     return {"updated": updated}
+
+@app.get("/debug")
+def debug():
+    from app.bot import parse_with_claude
+    result = parse_with_claude("we just sold 5 bags of rice")
+    return {"result": result}
