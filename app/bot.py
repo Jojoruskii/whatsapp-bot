@@ -1,7 +1,7 @@
 import os
 import re
 import json
-import urllib.request
+import requests
 from datetime import datetime
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
@@ -62,31 +62,49 @@ Rules:
 - for "setcategory" action, put the category name in "category"
 - If you cannot determine the intent, return {{"action": null, "product": null, "qty": null, "items": null}}"""
 
-    payload = json.dumps({
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 200,
-        "messages": [{"role": "user", "content": prompt}]
-    }).encode()
-
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": API_KEY,
-            "anthropic-version": "2023-06-01"
-        },
-        method="POST"
-    )
+    if not API_KEY:
+        print("[parse_with_claude] ANTHROPIC_API_KEY is not set")
+        return {"error": "ANTHROPIC_API_KEY not set"}
 
     try:
-        with urllib.request.urlopen(req) as response:
-            data = json.loads(response.read())
-            text = data["content"][0]["text"].strip()
-            return json.loads(text)
-    except urllib.error.HTTPError as e:
-        return {"error": f"HTTP {e.code}", "body": e.read().decode()}
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": API_KEY,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = data["content"][0]["text"].strip()
+
+        # Claude sometimes wraps JSON in ```json ... ``` fences despite instructions.
+        # Strip fences, then grab the first {...} block as a safety net.
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            text = match.group(0)
+
+        return json.loads(text)
+
+    except requests.exceptions.Timeout:
+        print("[parse_with_claude] Claude API call timed out")
+        return {"error": "timeout"}
+    except requests.exceptions.HTTPError:
+        print(f"[parse_with_claude] HTTP {response.status_code}: {response.text}")
+        return {"error": f"HTTP {response.status_code}", "body": response.text}
+    except json.JSONDecodeError as e:
+        print(f"[parse_with_claude] Could not parse Claude's reply as JSON. Raw text: {text!r}")
+        return {"error": f"json_decode_error: {e}", "raw": text}
     except Exception as e:
+        print(f"[parse_with_claude] Unexpected error: {e}")
         return {"error": str(e)}
 
 
@@ -414,6 +432,8 @@ def handle_message(incoming_msg: str) -> str:
     parsed = parse_keyword(incoming_msg)
     if not parsed:
         parsed = parse_with_claude(incoming_msg)
+        if parsed.get("error"):
+            print(f"[handle_message] Claude parse failed for {incoming_msg!r}: {parsed}")
     if parsed and parsed.get("action"):
         result = execute_command(parsed)
         if result:
