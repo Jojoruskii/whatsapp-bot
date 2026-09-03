@@ -104,3 +104,9 @@ def debug():
     from app.bot import parse_with_claude
     result = parse_with_claude("we just sold 5 bags of rice")
     return {"result": result}
+
+@app.get("/check-key")
+def check_key():
+    import os
+    key = os.getenv("ANTHROPIC_API_KEY", "NOT SET")
+    return {"key_preview": key[:20] if key != "NOT SET" else "NOT SET"}
