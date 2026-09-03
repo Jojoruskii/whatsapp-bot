@@ -45,7 +45,7 @@ Choose ONE from: Grains, Dairy, Cleaning, Beverages, Snacks, Produce, Meat, Bake
 Reply with ONLY the category name, nothing else."""
 
     payload = json.dumps({
-        "model": "claude-haiku-4-5",
+        "model": "claude-haiku-4-5-20251001",
         "max_tokens": 10,
         "messages": [{"role": "user", "content": prompt}]
     }).encode()
