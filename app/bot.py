@@ -213,7 +213,6 @@ def build_dashboard(products: list) -> str:
     max_cat_len = max(max_cat_len, 13)
     divider = "-" * (max_cat_len + 16)
 
-    # build table lines — wrapped in ``` for monospace
     table = []
     table.append(f"📦 INVENTORY · {date_str}")
     table.append(divider)
@@ -391,6 +390,19 @@ def execute_command(parsed: dict) -> str:
 
 def handle_message(incoming_msg: str) -> str:
     msg = incoming_msg.strip().lower()
+
+    # Guard: messages like "remove rice and add maize 10" contain two
+    # different actions. Left alone, the singular add/remove regex below
+    # would wrongly swallow "rice and add maize" as one product name.
+    # Catch it here with a clear instruction instead of a silent misparse.
+    verbs_used = set(re.findall(r"\b(add|remove)\b", msg))
+    if len(verbs_used) > 1:
+        return (
+            "❌ I can only handle one action per message right now.\n"
+            "Try sending them separately, e.g.:\n"
+            "  remove rice 5\n"
+            "  add maize 10"
+        )
 
     cat_match = re.match(r"^stock\s+([a-zA-Z ]+)$", msg)
     if cat_match:
