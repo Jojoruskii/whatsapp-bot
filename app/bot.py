@@ -453,10 +453,22 @@ def handle_message(incoming_msg: str) -> str:
     return get_menu()
 
 
+def truncate_for_whatsapp(text: str, limit: int = 1550) -> str:
+    """Twilio's WhatsApp channel rejects any message body over 1600 characters
+    (error 21617) with a silent delivery failure — no error shown to the user,
+    it just never arrives. Keep a safety margin and truncate cleanly at a line
+    break rather than mid-word, pointing to /export for the full data."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit("\n", 1)[0]
+    return cut + "\n\n… truncated (too long for WhatsApp)\nType `export` for the full list."
+
+
 async def whatsapp_webhook(request: Request):
     form = await request.form()
     incoming_msg = form.get("Body", "")
     reply = handle_message(incoming_msg)
+    reply = truncate_for_whatsapp(reply)
     resp = MessagingResponse()
     resp.message(reply)
     return PlainTextResponse(str(resp), media_type="application/xml")
