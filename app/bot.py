@@ -11,7 +11,7 @@ from app.database import SessionLocal
 from app.categorizer import guess_category
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY")
-BASE_URL = "https://web-production-e8e96.up.railway.app"
+BASE_URL = "https://whatsapp-bot-1cht.onrender.com"
 
 CATEGORY_EMOJIS = {
     "grains": "🌾", "dairy": "🥛", "cleaning": "🧴", "beverages": "🥤",
