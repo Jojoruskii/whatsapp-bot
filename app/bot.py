@@ -453,15 +453,34 @@ def handle_message(incoming_msg: str) -> str:
     return get_menu()
 
 
-def truncate_for_whatsapp(text: str, limit: int = 1550) -> str:
-    """Twilio's WhatsApp channel rejects any message body over 1600 characters
-    (error 21617) with a silent delivery failure — no error shown to the user,
-    it just never arrives. Keep a safety margin and truncate cleanly at a line
-    break rather than mid-word, pointing to /export for the full data."""
-    if len(text) <= limit:
+def whatsapp_length(text: str) -> int:
+    """Approximate how many 'characters' Twilio counts a string as. Emoji and
+    other non-GSM-7 characters take up more space than Python's plain len()
+    suggests. Most emoji are encoded as UTF-16 surrogate pairs (2 units each),
+    which lines up much more closely with how Twilio's real limit behaves."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def truncate_for_whatsapp(text: str, limit: int = 1300) -> str:
+    """Twilio's WhatsApp channel rejects any message whose encoded length
+    exceeds 1600 characters (error 21617) — a silent delivery failure with
+    no error shown, it just never arrives. Emoji-heavy text (progress bars,
+    status icons) counts for more than its raw Python length, so measure
+    conservatively via whatsapp_length() and truncate line-by-line rather
+    than by a raw character slice."""
+    footer = "\n\n… truncated (too long for WhatsApp)\nType `export` for the full list."
+    if whatsapp_length(text) <= limit:
         return text
-    cut = text[:limit].rsplit("\n", 1)[0]
-    return cut + "\n\n… truncated (too long for WhatsApp)\nType `export` for the full list."
+    footer_len = whatsapp_length(footer)
+    out = []
+    total = 0
+    for line in text.split("\n"):
+        line_len = whatsapp_length(line) + 1
+        if total + line_len + footer_len > limit:
+            break
+        out.append(line)
+        total += line_len
+    return "\n".join(out) + footer
 
 
 async def whatsapp_webhook(request: Request):
