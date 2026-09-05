@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from twilio.twiml.messaging_response import MessagingResponse
-from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product, reset_inventory, clear_stock, set_category
+from app.crud import add_stock, remove_stock, get_all_products, get_low_stock, set_reorder_level, delete_product, reset_inventory, clear_stock, set_category, get_product, get_last_product, set_last_product
 from app.database import SessionLocal
 from app.categorizer import guess_category
 
@@ -36,13 +36,22 @@ def build_progress_bar(current: int, reorder_level: int) -> tuple:
         indicator, status = "🔴", "🚨"
     return indicator, bar, pct, status
 
-def parse_with_claude(msg: str):
+def parse_with_claude(msg: str, last_product: str = None):
+    context_line = ""
+    if last_product:
+        context_line = (
+            f'\n\nContext: the last product this user mentioned was "{last_product}". '
+            f'If this message refers to a product implicitly without naming one '
+            f'(e.g. "add 5 more", "remove 3 of those", "same for it"), use '
+            f'"{last_product}" as the product.'
+        )
+
     prompt = f"""You are an inventory bot parser. Extract the intent from this message.
 
-Message: "{msg}"
+Message: "{msg}"{context_line}
 
 Reply ONLY with a JSON object in this exact format, nothing else:
-{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "delete" or "reset" or "clearstock" or "setcategory" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "category": "category name or null", "items": [{{"product": "name", "qty": number}}] or null}}
+{{"action": "add" or "remove" or "stock" or "lowstock" or "export" or "multi" or "setlevel" or "delete" or "reset" or "clearstock" or "setcategory" or "check" or "menu", "product": "product name or null", "qty": number or null, "level": number or null, "category": "category name or null", "items": [{{"product": "name", "qty": number}}] or null}}
 
 Rules:
 - action is "add" if user wants to add/restock/received a single item
@@ -56,6 +65,7 @@ Rules:
 - action is "reset" if user wants to wipe the entire inventory
 - action is "clearstock" if user wants to zero all quantities
 - action is "setcategory" if user wants to change the category of a product
+- action is "check" if user is asking how much of ONE specific product is currently in stock (e.g. "how much rice do we have", "do we still have sugar")
 - action is "menu" if user wants help or a list of features
 - for "multi" action, include "bulk_action" as "add" or "remove"
 - for "setlevel" action, put the threshold in "level"
@@ -128,6 +138,10 @@ def parse_keyword(msg: str) -> dict | None:
     if match:
         return {"action": "delete", "product": match.group(1).strip(), "qty": None}
 
+    match = re.match(r"^check\s+([a-zA-Z ]+)$", msg)
+    if match:
+        return {"action": "check", "product": match.group(1).strip(), "qty": None}
+
     match = re.match(r"^setlevel\s+([a-zA-Z ]+?)\s+(\d+)$", msg)
     if match:
         return {"action": "setlevel", "product": match.group(1).strip(), "level": int(match.group(2)), "qty": None}
@@ -174,6 +188,7 @@ def get_menu() -> str:
         "• `lowstock` — view low stock items\n\n"
         "➕ `add rice 10`\n"
         "➖ `remove rice 3`\n"
+        "🔍 `check rice` — see one product's stock\n"
         "🗑️ `delete rice`\n"
         "⚙️ `setlevel rice 15`\n"
         "🏷️ `setcategory rice grains`\n"
@@ -289,6 +304,21 @@ def execute_command(parsed: dict) -> str:
                 "_Opens in Excel or Google Sheets_ ✅"
             )
 
+        elif action == "check":
+            if not product:
+                return "❌ Try: check rice"
+            p = get_product(db, product)
+            if not p:
+                return f"❌ *{product.title()}* isn't in your inventory yet."
+            indicator, bar, pct, status = build_progress_bar(p.quantity, p.reorder_level)
+            cat = p.category or "Uncategorized"
+            emoji = get_category_emoji(cat)
+            return (
+                f"{indicator} *{p.name.title()}* [{emoji}]\n"
+                f"   {p.quantity} units  {bar} {pct}%\n"
+                f"   ↳ reorder at: {p.reorder_level} units"
+            )
+
         elif action == "delete":
             if not product:
                 return "❌ Format: delete <product>"
@@ -388,7 +418,7 @@ def execute_command(parsed: dict) -> str:
         db.close()
 
 
-def handle_message(incoming_msg: str) -> str:
+def handle_message(incoming_msg: str, phone: str = "unknown") -> str:
     msg = incoming_msg.strip().lower()
 
     # Guard: messages like "remove rice and add maize 10" contain two
@@ -443,10 +473,22 @@ def handle_message(incoming_msg: str) -> str:
 
     parsed = parse_keyword(incoming_msg)
     if not parsed:
-        parsed = parse_with_claude(incoming_msg)
+        db = SessionLocal()
+        try:
+            last_product = get_last_product(db, phone)
+        finally:
+            db.close()
+        parsed = parse_with_claude(incoming_msg, last_product=last_product)
         if parsed.get("error"):
             print(f"[handle_message] Claude parse failed for {incoming_msg!r}: {parsed}")
+
     if parsed and parsed.get("action"):
+        if parsed.get("product"):
+            db = SessionLocal()
+            try:
+                set_last_product(db, phone, parsed["product"])
+            finally:
+                db.close()
         result = execute_command(parsed)
         if result:
             return result
@@ -475,7 +517,7 @@ def truncate_for_whatsapp(text: str, limit: int = 1300) -> str:
     out = []
     total = 0
     for line in text.split("\n"):
-        line_len = whatsapp_length(line) + 1
+        line_len = whatsapp_length(line) + 1  # +1 for the newline
         if total + line_len + footer_len > limit:
             break
         out.append(line)
@@ -486,7 +528,8 @@ def truncate_for_whatsapp(text: str, limit: int = 1300) -> str:
 async def whatsapp_webhook(request: Request):
     form = await request.form()
     incoming_msg = form.get("Body", "")
-    reply = handle_message(incoming_msg)
+    phone = form.get("From", "unknown")
+    reply = handle_message(incoming_msg, phone)
     reply = truncate_for_whatsapp(reply)
     resp = MessagingResponse()
     resp.message(reply)

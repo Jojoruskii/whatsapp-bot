@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from app.models import Product
+from app.models import Product, ConversationState
 
 def normalize(name: str) -> str:
     """Remove spaces and lowercase — 'Cooking Oil' becomes 'cookingoil'"""
@@ -81,3 +81,18 @@ def set_reorder_level(db: Session, name: str, level: int):
     db.commit()
     db.refresh(product)
     return product, None
+
+
+def get_last_product(db: Session, phone: str):
+    state = db.query(ConversationState).filter(ConversationState.phone == phone).first()
+    return state.last_product if state else None
+
+
+def set_last_product(db: Session, phone: str, product_name: str):
+    state = db.query(ConversationState).filter(ConversationState.phone == phone).first()
+    if state:
+        state.last_product = product_name
+    else:
+        state = ConversationState(phone=phone, last_product=product_name)
+        db.add(state)
+    db.commit()
